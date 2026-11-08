@@ -571,7 +571,9 @@ async function sendAll(n: Note): Promise<{ push: number; pushFailed: number; tel
   console.log(`[notify] ${n.title} — push ${push}/${push + pushFailed}${telegram === null ? "" : `, telegram ${telegram}`}`);
   return { push, pushFailed, telegram };
 }
-const jobStateOf = (j: Job) => (j.tempo === "blocked" || j.state === "blocked" || (j.needs && j.state !== "done") ? "blocked" : j.state);
+// A resumed/attached session keeps state "done" while it generates; only tempo turns "active" — count that as
+// working, so a follow-up reply finishing still triggers the "done" notification.
+const jobStateOf = (j: Job) => (j.tempo === "blocked" || j.state === "blocked" || (j.needs && j.state !== "done") ? "blocked" : j.tempo === "active" ? "working" : j.state);
 const textOf = (v: any) => (v == null ? "" : typeof v === "string" ? v : v.text || v.question || v.result || v.headline || JSON.stringify(v));
 let lastStates: Map<string, string> | null = null;
 function watchJobs() {
@@ -586,7 +588,7 @@ function watchJobs() {
   }
   lastStates = now;
 }
-setInterval(watchJobs, 5000); watchJobs();
+setInterval(watchJobs, 2000); watchJobs(); // 2 s: short "active" phases of quick follow-up replies must not slip between checks
 
 
 

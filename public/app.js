@@ -50,7 +50,8 @@ const short = (p) => (p || "").replace(/^\/Users\/[^/]+/, "~");
 const needsText = (n) => (n == null ? "" : typeof n === "string" ? n : n.text || n.question || JSON.stringify(n));
 const outText = (o) => (o == null ? "" : typeof o === "string" ? o : o.result || o.text || o.headline || JSON.stringify(o));
 const isBlocked = (j) => j.tempo === "blocked" || j.state === "blocked" || (j.needs && j.state !== "done");
-const jobState = (j) => (isBlocked(j) ? "blocked" : j.state);
+// A resumed/attached session keeps state "done" while it generates; only tempo turns "active".
+const jobState = (j) => (isBlocked(j) ? "blocked" : j.tempo === "active" ? "working" : j.state);
 
 // ───────────── state + polling + notifications ─────────────
 let data = { jobs: [], transcripts: [], tmux: [], cwds: [], ptys: [] };
@@ -173,7 +174,7 @@ const fmtTok = (n) => n >= 1e9 ? (n / 1e9).toFixed(1) + "B" : n >= 1e6 ? (n / 1e
 let overviewSig = "";
 function renderOverview() {
   const st = stats; const el = $("#overview"); if (!el) return;
-  const jobsNow = { run: data.jobs.filter((j) => !isBlocked(j) && j.state === "working").length, wait: data.jobs.filter(isBlocked).length,
+  const jobsNow = { run: data.jobs.filter((j) => jobState(j) === "working").length, wait: data.jobs.filter(isBlocked).length,
     doneToday: data.jobs.filter((j) => j.state === "done" && (j.updatedAt || "").slice(0, 10) === new Date().toISOString().slice(0, 10)).length };
   const sig = JSON.stringify([st?.updatedAt, st?.quota, jobsNow, wide()]); if (sig === overviewSig) return; overviewSig = sig;
   if (!st?.ready) { el.innerHTML = `<div class="empty">building usage stats…</div>`; return; }
@@ -232,8 +233,8 @@ function hideTip() { $("#tip").hidden = true; }
 function renderDash() {
   dashSkeleton(); renderOverview();
   const blocked = data.jobs.filter(isBlocked);
-  const working = data.jobs.filter((j) => !isBlocked(j) && j.state === "working");
-  const rest = data.jobs.filter((j) => !isBlocked(j) && j.state !== "working");
+  const working = data.jobs.filter((j) => jobState(j) === "working");
+  const rest = data.jobs.filter((j) => !isBlocked(j) && jobState(j) !== "working");
   const el = $("#dashBody"); const y = $("#dash").scrollTop;
   const hint = wide() ? `<div class="hint">Open any session to get <b>Chat</b> · <b>Terminal</b> · <b>Split</b> (both side by side) · <b>Changes</b> (this session's diffs).
     <kbd>⌘K</kbd> switch session · <kbd>Alt+1–4</kbd> switch view · <kbd>Alt+N</kbd> new · <kbd>/</kbd> type a message</div>` : "";
@@ -353,13 +354,55 @@ function openChat() {
     const chat = $("#chat"); const stick = d.initial || chat.scrollHeight - chat.scrollTop - chat.clientHeight < 120;
     if (d.initial) ev.innerHTML = d.truncated ? `<div class="empty">(older messages omitted)</div>` : "";
     for (const e of d.evs) addEvent(e);
+    renderActivity();
     if (stick) chat.scrollTop = chat.scrollHeight; else if (d.evs.length) $("#jump").hidden = false;
     if (!d.initial && d.evs.some((e) => e.k === "tool" && /Edit|Write/.test(e.name)) && cur.tab === "changes") loadChanges();
   };
-  ws.onclose = () => { if (ctx === cur && !ctx.closing) { ctx.tailWs = null; setTimeout(() => ctx === cur && !ctx.tailWs && openChat(), 2000); } };
+  ws.onopen = () => renderActivity();
+  ws.onclose = () => { if (ctx === cur && !ctx.closing) { ctx.tailWs = null; renderActivity(); setTimeout(() => ctx === cur && !ctx.tailWs && openChat(), 2000); } };
 }
 $("#chat").addEventListener("scroll", () => { const c = $("#chat"); if (c.scrollHeight - c.scrollTop - c.clientHeight < 60) $("#jump").hidden = true; });
 $("#jump").onclick = () => { const c = $("#chat"); c.scrollTop = c.scrollHeight; $("#jump").hidden = true; };
+
+// ───────────── activity indicator (Chat view) ─────────────
+// Shows that a message went out and the session is alive: an optimistic "sending" bubble, then a
+// "Claude is working · <what> · <elapsed>" bubble with animated dots, or a warning if the live link dropped.
+function addPending(text) {
+  const ev = $("#events"); const d = document.createElement("div");
+  d.className = "ev user pending"; d.dataset.text = text.replace(/\s+/g, " ").trim(); d.dataset.at = String(Date.now());
+  d.innerHTML = `<span class="ptext"></span><span class="pstate">sending…</span>`; d.querySelector(".ptext").textContent = text;
+  ev.appendChild(d); const c = $("#chat"); c.scrollTop = c.scrollHeight;
+}
+const fmtSecs = (s) => (s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${String(s % 60).padStart(2, "0")}s`);
+function renderActivity() {
+  const ev = $("#events"); if (!ev || !cur || $("#chat").hidden || !cur.sessionId) return;
+  const j = cur.kind === "job" ? data.jobs.find((x) => x.id === cur.id) : null;
+  // "Working" = the session says so, OR we sent a message and the session hasn't yet reported done/waiting
+  // with an update newer than that send (the session list refreshes only every few seconds).
+  const settledAfterSend = j && cur.awaitingSince && (j.state === "done" || isBlocked(j)) && Date.parse(j.updatedAt) > cur.awaitingSince + 1000;
+  if (settledAfterSend || (cur.awaitingSince && Date.now() - cur.awaitingSince > 30 * 60_000)) cur.awaitingSince = null;
+  // Note: a resumed/attached session keeps state "done" while generating; only tempo turns "active".
+  const working = !!(j && !isBlocked(j) && (j.state === "working" || j.tempo === "active" || cur.awaitingSince));
+  const detailFresh = j && !(cur.awaitingSince && Date.parse(j.updatedAt) <= cur.awaitingSince); // don't show the previous task's status
+  const pending = [...ev.querySelectorAll(".ev.user.pending")];
+  for (const p of pending) if (Date.now() - Number(p.dataset.at) > 30_000) p.querySelector(".pstate").textContent = "not confirmed yet";
+  let text = "", cls = "";
+  if (cur.tailWs?.readyState !== 1) { text = "live connection lost — reconnecting…"; cls = "warn"; }
+  else if (working) {
+    if (!cur.workSince) cur.workSince = Date.now();
+    text = `Claude is working${j.detail && detailFresh ? " · " + j.detail : ""} · ${fmtSecs(Math.round((Date.now() - cur.workSince) / 1000))}`;
+  } else if (pending.length) text = "sent — waiting for Claude to pick it up…";
+  if (!working && !pending.length) cur.workSince = null;
+  let el = $("#activity");
+  if (!text) { el?.remove(); return; }
+  if (!el) { el = document.createElement("div"); el.id = "activity"; el.innerHTML = `<span class="dots" aria-hidden="true"><i></i><i></i><i></i></span><span class="atext" role="status"></span>`; }
+  el.className = `ev activity ${cls}`; el.querySelector(".atext").textContent = text;
+  if (ev.lastElementChild !== el) {
+    const c = $("#chat"); const stick = c.scrollHeight - c.scrollTop - c.clientHeight < 120;
+    ev.appendChild(el); if (stick) c.scrollTop = c.scrollHeight;
+  }
+}
+setInterval(renderActivity, 1000);
 
 function addEvent(e) {
   const ev = $("#events");
@@ -371,6 +414,10 @@ function addEvent(e) {
     const st = det.querySelector(".st"); st.textContent = e.isError ? "error" : "✓"; st.className = `st ${e.isError ? "err" : ""}`;
     const pre = document.createElement("pre"); pre.textContent = e.text || "(no output)"; det.appendChild(pre);
     return;
+  }
+  if (e.k === "user") { // the transcript confirmed it → drop the matching optimistic bubble
+    const norm = (x) => String(x || "").replace(/\s+/g, " ").trim();
+    for (const p of ev.querySelectorAll(".ev.user.pending")) if (p.dataset.text === norm(e.text)) { p.remove(); break; }
   }
   const div = document.createElement("div"); div.className = `ev ${e.k}`;
   if (e.k === "user" || e.k === "system") div.textContent = e.text;
@@ -485,7 +532,9 @@ $("#composer").onsubmit = async (e) => {
     if (cur.kind === "transcript") await resume(text);
     else if (cur.ptyWs?.readyState === 1) { sendPty({ t: "in", d: `\x1b[200~${text}\x1b[201~` }); setTimeout(() => sendPty({ t: "in", d: "\r" }), 150); }
     else await api("/api/send", { target: cur.target, text });
-    input.value = ""; input.style.height = "auto"; toast("sent");
+    input.value = ""; input.style.height = "auto";
+    if (cur.kind === "job" && !$("#chat").hidden && text.trim()) { addPending(text); cur.workSince = cur.awaitingSince = Date.now(); renderActivity(); }
+    else toast("sent");
   } catch (err) { toast(err.message); } finally { btn.disabled = false; }
 };
 async function resume(prompt) {
