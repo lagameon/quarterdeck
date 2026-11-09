@@ -1,6 +1,6 @@
-// ccdeck — remote control for Claude Code over Tailscale.
+// quarterdeck — remote control for Claude Code over Tailscale.
 // One Bun process: HTTP API + static UI + WebSocket PTY hub + transcript tail.
-import { readdirSync, statSync, existsSync, openSync, readSync, closeSync, readFileSync, writeFileSync, mkdirSync, chmodSync } from "node:fs";
+import { readdirSync, statSync, existsSync, openSync, readSync, closeSync, readFileSync, writeFileSync, mkdirSync, chmodSync, realpathSync } from "node:fs";
 import webpush from "web-push";
 import { Terminal as HeadlessTerm } from "@xterm/headless";
 import { parseMenu } from "./menu";
@@ -12,27 +12,69 @@ const HOME = homedir();
 const CLAUDE_DIR = join(HOME, ".claude");
 const JOBS_DIR = join(CLAUDE_DIR, "jobs");
 const PROJECTS_DIR = join(CLAUDE_DIR, "projects");
+
+// ───────────────────────────── accounts ("profiles") ─────────────────────────────
+// Each profile is a Claude Code config dir with its OWN login and background sessions, so several accounts
+// stay signed in side by side and nothing ever copies credentials between them (no refresh-token rotation
+// trouble). The default dir (~/.claude) is used WITHOUT CLAUDE_CONFIG_DIR — setting it would move
+// ~/.claude.json into the dir. Extra profiles come from config.json: "profiles": [{"id": "work", "dir": "~/.claude-work"}].
+type Profile = { id: string; dir: string; isDefault: boolean };
+const PROFILES: Profile[] = (() => {
+  let list: any[] = [];
+  try { list = JSON.parse(readFileSync(join(process.env.QUARTERDECK_CONFIG_DIR || join(HOME, ".config/quarterdeck"), "config.json"), "utf8")).profiles || []; } catch {}
+  const norm = (d: string) => d.replace(/^~(?=\/|$)/, HOME).replace(/\/+$/, "");
+  const out: Profile[] = [{ id: "default", dir: CLAUDE_DIR, isDefault: true }];
+  for (const x of list) {
+    const dir = norm(String(x?.dir || "")); if (!dir || dir === CLAUDE_DIR || !existsSync(dir)) continue;
+    const id = String(x?.id || basename(dir)).replace(/[^\w.-]/g, "").slice(0, 32);
+    if (id && id !== "default" && !out.some((p) => p.id === id || p.dir === dir)) out.push({ id, dir, isDefault: false });
+  }
+  return out;
+})();
+const profileById = (id?: unknown): Profile | null => PROFILES.find((p) => p.id === (id ? String(id) : "default")) || null;
+const profileEnv = (p: Profile | null): Record<string, string> => (p && !p.isDefault ? { CLAUDE_CONFIG_DIR: p.dir } : {});
+function profileOfJob(id: string): Profile | null {
+  for (const p of PROFILES) if (existsSync(join(p.dir, "jobs", id, "state.json"))) return p;
+  return null;
+}
+// Transcript roots, de-duplicated (a profile may share ~/.claude/projects through a symlink).
+const PROJECT_ROOTS: string[] = (() => {
+  const seen = new Set<string>(); const out: string[] = [];
+  for (const p of PROFILES) { const d = join(p.dir, "projects"); let r = d; try { r = realpathSync(d); } catch { continue; } if (!seen.has(r)) { seen.add(r); out.push(d); } }
+  return out;
+})();
+let accountsCache: { at: number; list: any[] } = { at: 0, list: [] };
+function accountsStatus() {
+  if (Date.now() - accountsCache.at < 60_000) return accountsCache.list;
+  const list = PROFILES.map((p) => {
+    const r = run([CLAUDE_BIN, "auth", "status"], { timeoutMs: 15000, env: profileEnv(p) });
+    let d: any = {}; try { d = JSON.parse(r.out); } catch {}
+    return { id: p.id, dir: p.dir.replace(HOME, "~"), isDefault: p.isDefault, loggedIn: !!d.loggedIn, email: d.email || null, planTier: d.planTier || null, loginExpiresAt: d.loginExpiresAt || null };
+  });
+  accountsCache = { at: Date.now(), list };
+  return list;
+}
 const PUBLIC = join(import.meta.dir, "public");
 const NM = join(import.meta.dir, "node_modules");
 
-// Configuration: ~/.config/ccdeck/config.json (env vars override). See config.example.json.
-const CONF_DIR = process.env.CCDECK_CONFIG_DIR || join(HOME, ".config/ccdeck");
+// Configuration: ~/.config/quarterdeck/config.json (env vars override). See config.example.json.
+const CONF_DIR = process.env.QUARTERDECK_CONFIG_DIR || join(HOME, ".config/quarterdeck");
 const CONFIG: Record<string, any> = (() => { try { return JSON.parse(readFileSync(join(CONF_DIR, "config.json"), "utf8")); } catch { return {}; } })();
-const PORT = Number(process.env.CCDECK_PORT || CONFIG.port || 7690);
-// The ONE Tailscale login allowed in. Required — ccdeck gives a shell, so there is no default.
-const OWNER: string = process.env.CCDECK_OWNER || CONFIG.owner || "";
+const PORT = Number(process.env.QUARTERDECK_PORT || CONFIG.port || 7690);
+// The ONE Tailscale login allowed in. Required — quarterdeck gives a shell, so there is no default.
+const OWNER: string = process.env.QUARTERDECK_OWNER || CONFIG.owner || "";
 if (!OWNER) {
-  console.error(`[ccdeck] refusing to start: set "owner" (your Tailscale login, e.g. you@example.com) in ${join(CONF_DIR, "config.json")} or CCDECK_OWNER.`);
+  console.error(`[quarterdeck] refusing to start: set "owner" (your Tailscale login, e.g. you@example.com) in ${join(CONF_DIR, "config.json")} or QUARTERDECK_OWNER.`);
   process.exit(1);
 }
-const TAILSCALE = process.env.CCDECK_TAILSCALE || CONFIG.tailscale || (process.platform === "darwin" ? "/Applications/Tailscale.app/Contents/MacOS/Tailscale" : "tailscale");
-const CLAUDE_BIN = process.env.CCDECK_CLAUDE || CONFIG.claude || join(HOME, ".local/bin/claude");
-const BIND_TS = (process.env.CCDECK_BIND_TS ?? (CONFIG.bindTailscale === false ? "0" : "1")) !== "0"; // also listen on the Tailscale IP
-const DATA_DIR = process.env.CCDECK_DATA_DIR || CONFIG.dataDir || join(HOME, ".local/share/ccdeck");
+const TAILSCALE = process.env.QUARTERDECK_TAILSCALE || CONFIG.tailscale || (process.platform === "darwin" ? "/Applications/Tailscale.app/Contents/MacOS/Tailscale" : "tailscale");
+const CLAUDE_BIN = process.env.QUARTERDECK_CLAUDE || CONFIG.claude || join(HOME, ".local/bin/claude");
+const BIND_TS = (process.env.QUARTERDECK_BIND_TS ?? (CONFIG.bindTailscale === false ? "0" : "1")) !== "0"; // also listen on the Tailscale IP
+const DATA_DIR = process.env.QUARTERDECK_DATA_DIR || CONFIG.dataDir || join(HOME, ".local/share/quarterdeck");
 
 // ───────────────────────────── helpers ─────────────────────────────
-function run(cmd: string[], opts: { cwd?: string; timeoutMs?: number } = {}): { code: number; out: string; err: string } {
-  const p = Bun.spawnSync(cmd, { cwd: opts.cwd, env: childEnv(), stdout: "pipe", stderr: "pipe", timeout: opts.timeoutMs ?? 15000 });
+function run(cmd: string[], opts: { cwd?: string; timeoutMs?: number; env?: Record<string, string> } = {}): { code: number; out: string; err: string } {
+  const p = Bun.spawnSync(cmd, { cwd: opts.cwd, env: { ...childEnv(), ...(opts.env || {}) }, stdout: "pipe", stderr: "pipe", timeout: opts.timeoutMs ?? 15000 });
   return { code: p.exitCode ?? -1, out: p.stdout.toString(), err: p.stderr.toString() };
 }
 function childEnv(): Record<string, string> {
@@ -95,7 +137,7 @@ function whoisCheck(addr: string): { ok: boolean; who: string } {
 }
 // Block cross-site requests (a page on another origin poking the API / WS from an allowed device).
 // DNS-rebinding guard: a page on another site could re-point its own hostname at 127.0.0.1 and then
-// talk to ccdeck "same-origin". So the Host header must be one of ccdeck's own names.
+// talk to quarterdeck "same-origin". So the Host header must be one of quarterdeck's own names.
 const ALLOWED_HOSTS = new Set<string>(["localhost", "127.0.0.1", "[::1]", ...((CONFIG.allowedHosts || []) as string[])]);
 function learnTailscaleNames() {
   const r = run([TAILSCALE, "status", "--json"], { timeoutMs: 5000 });
@@ -113,7 +155,7 @@ function hostAllowed(req: Request): boolean {
   return ALLOWED_HOSTS.has(name);
 }
 // Fetch metadata (sent by all modern browsers, incl. on no-cors GETs where Origin is absent):
-// API and WebSocket calls must come from ccdeck's own page; any cross-site embedding is refused.
+// API and WebSocket calls must come from quarterdeck's own page; any cross-site embedding is refused.
 function fetchSiteOk(req: Request, path: string): boolean {
   const site = req.headers.get("sec-fetch-site"); const dest = req.headers.get("sec-fetch-dest") || "";
   if (path.startsWith("/api/") || path.startsWith("/ws/")) return !site || site === "same-origin" || site === "none";
@@ -130,30 +172,69 @@ function sameOrigin(req: Request): boolean {
 type Job = {
   kind: "job"; id: string; sessionId: string; name: string; state: string; tempo: string;
   detail: string; needs: unknown; output: unknown; intent: string; cwd: string;
-  createdAt: string; updatedAt: string; pid?: number;
+  createdAt: string; updatedAt: string; pid?: number; profile: string;
+  phase?: "working" | "idle" | "waiting"; activityAt?: number;
 };
+
+// state.json lags in both directions (seen: "working" 80 s after the turn ended; "blocked" while Claude was
+// already answering the user's reply). The transcript is the truth: its last main-chain entry says whether
+// a turn is in progress. Cached per file by mtime, so polling stays cheap.
+const END_SUBTYPES = new Set(["turn_duration", "away_summary"]);
+const phaseCache = new Map<string, { mtime: number; phase: "working" | "idle" | "waiting" }>();
+function transcriptPhase(file: string, tempo: string): { phase: "working" | "idle" | "waiting"; at: number } | null {
+  let st; try { st = statSync(file); } catch { return null; }
+  const c = phaseCache.get(file);
+  let phase = c && c.mtime === st.mtimeMs ? c.phase : null;
+  if (!phase) {
+    phase = "idle";
+    const lines = readTail(file, 256_000).split("\n");
+    for (let i = lines.length - 1; i >= 0; i--) {
+      const l = lines[i]; if (!l.startsWith("{")) continue;
+      let e: any; try { e = JSON.parse(l); } catch { continue; }
+      if (e.isSidechain) continue;
+      if (e.type === "system") { if (END_SUBTYPES.has(e.subtype)) { phase = "idle"; break; } continue; }
+      if (e.type === "assistant") {
+        const sr = e.message?.stop_reason; const content = Array.isArray(e.message?.content) ? e.message.content : [];
+        if (sr === "end_turn" || sr === "stop_sequence" || sr === "max_tokens") { phase = "idle"; break; }
+        const tool = content.find((b: any) => b?.type === "tool_use");
+        phase = tool && tool.name === "AskUserQuestion" ? "waiting" : "working"; break;
+      }
+      if (e.type === "user") { if (e.isMeta) continue; phase = "working"; break; }
+    }
+    phaseCache.set(file, { mtime: st.mtimeMs, phase });
+  }
+  // A crashed/abandoned turn must not look busy forever: no writes for 20 min and not active → idle.
+  if (phase === "working" && Date.now() - st.mtimeMs > 20 * 60_000 && tempo !== "active") phase = "idle";
+  return { phase, at: st.mtimeMs };
+}
 let agentsCache: { at: number; byId: Map<string, any> } = { at: 0, byId: new Map() };
 function agentsInfo() {
   if (Date.now() - agentsCache.at < 15_000) return agentsCache.byId;
-  const r = run([CLAUDE_BIN, "agents", "--json", "--all"], { timeoutMs: 15000 });
   const byId = new Map<string, any>();
-  try { for (const a of JSON.parse(r.out)) byId.set(a.id, a); } catch {}
+  for (const p of PROFILES) {
+    const r = run([CLAUDE_BIN, "agents", "--json", "--all"], { timeoutMs: 15000, env: profileEnv(p) });
+    try { for (const a of JSON.parse(r.out)) byId.set(a.id, a); } catch {}
+  }
   agentsCache = { at: Date.now(), byId };
   return byId;
 }
 function listJobs(): Job[] {
-  if (!existsSync(JOBS_DIR)) return [];
   const agents = agentsInfo();
   const out: Job[] = [];
-  for (const id of readdirSync(JOBS_DIR)) {
-    const s = readJson(join(JOBS_DIR, id, "state.json"));
+  for (const prof of PROFILES) {
+  const jobsDir = join(prof.dir, "jobs"); if (!existsSync(jobsDir)) continue;
+  for (const id of readdirSync(jobsDir)) {
+    const s = readJson(join(jobsDir, id, "state.json"));
     if (!s) continue;
     out.push({
       kind: "job", id, sessionId: s.sessionId || s.resumeSessionId || "", name: s.name || s.intent?.slice(0, 60) || id,
       state: s.state || "?", tempo: s.tempo || "", detail: s.detail || "", needs: s.needs ?? null, output: s.output ?? null,
       intent: s.intent || "", cwd: s.cwd || s.originCwd || HOME, createdAt: s.createdAt || "", updatedAt: s.updatedAt || "",
-      pid: agents.get(id)?.pid,
+      pid: agents.get(id)?.pid, profile: prof.id,
     });
+    const job = out[out.length - 1]; const tf = job.sessionId ? findSessionFile(job.sessionId) : null;
+    const ph = tf ? transcriptPhase(tf, job.tempo) : null; if (ph) { job.phase = ph.phase; job.activityAt = ph.at; }
+  }
   }
   return out.sort((a, b) => (b.updatedAt || "").localeCompare(a.updatedAt || ""));
 }
@@ -164,8 +245,8 @@ const sessionFileCache = new Map<string, string>();
 function findSessionFile(sessionId: string): string | null {
   if (!/^[0-9a-f-]{8,64}$/i.test(sessionId)) return null;
   const c = sessionFileCache.get(sessionId); if (c && existsSync(c)) return c;
-  for (const proj of readdirSync(PROJECTS_DIR)) {
-    const p = join(PROJECTS_DIR, proj, `${sessionId}.jsonl`);
+  for (const root of PROJECT_ROOTS) for (const proj of readdirSync(root)) {
+    const p = join(root, proj, `${sessionId}.jsonl`);
     if (existsSync(p)) { sessionFileCache.set(sessionId, p); return p; }
   }
   return null;
@@ -196,8 +277,8 @@ function transcriptInfo(path: string, project: string): Transcript | null {
 }
 function listTranscripts(limit = 40, exclude: Set<string>): Transcript[] {
   const files: { p: string; m: number; proj: string }[] = [];
-  for (const proj of readdirSync(PROJECTS_DIR)) {
-    const dir = join(PROJECTS_DIR, proj);
+  for (const root of PROJECT_ROOTS) for (const proj of readdirSync(root)) {
+    const dir = join(root, proj);
     let ents: string[] = []; try { ents = readdirSync(dir); } catch { continue; }
     for (const f of ents) {
       if (!f.endsWith(".jsonl")) continue;
@@ -307,9 +388,9 @@ class Pty {
   cols = 120; rows = 36; lastOut = Date.now(); lastClientAt = Date.now(); exited = false;
   // Server-side mirror of the screen, so the Chat view can see menus that only exist in the TUI.
   screen = new HeadlessTerm({ cols: 120, rows: 36, allowProposedApi: true, scrollback: 0 });
-  constructor(public key: string, cmd: string[], cwd: string) {
+  constructor(public key: string, cmd: string[], cwd: string, extraEnv: Record<string, string> = {}) {
     this.proc = Bun.spawn(cmd, {
-      cwd: existsSync(cwd) ? cwd : HOME, env: childEnv(),
+      cwd: existsSync(cwd) ? cwd : HOME, env: { ...childEnv(), ...extraEnv },
       terminal: { cols: this.cols, rows: this.rows, data: (_t: any, d: Uint8Array) => this.onData(d) },
       onExit: () => { this.exited = true; for (const c of this.clients) { try { c.send(JSON.stringify({ t: "exit" })); } catch {} } ptys.delete(this.key); },
     } as any);
@@ -334,21 +415,22 @@ class Pty {
 }
 const ptys = new Map<string, Pty>();
 
-function targetCommand(key: string): { cmd: string[]; cwd: string } | null {
+function targetCommand(key: string): { cmd: string[]; cwd: string; env?: Record<string, string> } | null {
   const [kind, ...rest] = key.split(":"); const arg = rest.join(":");
   if (kind === "job") {
     if (!/^[0-9a-f]{6,12}$/.test(arg)) return null;
-    const s = readJson(join(JOBS_DIR, arg, "state.json"));
-    return { cmd: [CLAUDE_BIN, "attach", arg], cwd: s?.cwd || HOME };
+    const prof = profileOfJob(arg);
+    const s = prof ? readJson(join(prof.dir, "jobs", arg, "state.json")) : null;
+    return { cmd: [CLAUDE_BIN, "attach", arg], cwd: s?.cwd || HOME, env: profileEnv(prof) };
   }
   if (kind === "tmux") {
     if (!/^[\w.@%+-]{1,64}$/.test(arg)) return null;
     return { cmd: ["tmux", "attach-session", "-t", arg], cwd: HOME };
   }
   if (kind === "shell") {
-    // Persistent shell = a tmux session, so it outlives ccdeck restarts.
+    // Persistent shell = a tmux session, so it outlives quarterdeck restarts.
     const cwd = arg && existsSync(arg) ? arg : HOME;
-    return { cmd: ["tmux", "new-session", "-A", "-s", "ccdeck", "-c", cwd], cwd };
+    return { cmd: ["tmux", "new-session", "-A", "-s", "quarterdeck", "-c", cwd], cwd };
   }
   return null;
 }
@@ -366,7 +448,7 @@ function getPty(key: string): Pty | null {
     const idle = [...ptys.values()].filter((x) => x.clients.size === 0).sort((x, y) => x.lastClientAt - y.lastClientAt)[0];
     if (!idle) return null; idle.kill(); ptys.delete(idle.key);
   }
-  p = new Pty(key, t.cmd, t.cwd); ptys.set(key, p);
+  p = new Pty(key, t.cmd, t.cwd, t.env); ptys.set(key, p);
   console.log(`[pty] spawn ${key}: ${t.cmd.join(" ")}`);
   return p;
 }
@@ -382,34 +464,37 @@ async function waitQuiet(p: Pty, quietMs = 1200, maxMs = 10000) {
 
 
 // ───────────────────────────── actions ─────────────────────────────
-function parseBgId(code: number, text: string): string | null {
+function parseBgId(code: number, text: string, prof: Profile | null = profileById()): string | null {
   if (code !== 0) return null;
-  const known = new Set(existsSync(JOBS_DIR) ? readdirSync(JOBS_DIR) : []);
+  const jobsDir = join((prof || PROFILES[0]).dir, "jobs");
+  const known = new Set(existsSync(jobsDir) ? readdirSync(jobsDir) : []);
   for (const m of text.matchAll(/\b([0-9a-f]{8})\b/g)) if (known.has(m[1])) return m[1];
   return null;
 }
 async function actNew(body: any) {
   const cwd = String(body.cwd || HOME); if (!existsSync(cwd)) return json({ error: `cwd not found: ${cwd}` }, 400);
   const prompt = String(body.prompt || "").trim(); if (!prompt) return json({ error: "prompt required" }, 400);
+  const prof = profileById(body.profile); if (!prof) return json({ error: "unknown account" }, 400);
   const cmd = [CLAUDE_BIN, "--bg"];
   if (body.name) cmd.push("-n", String(body.name).slice(0, 80));
   if (body.permissionMode) cmd.push("--permission-mode", String(body.permissionMode));
   if (body.model) cmd.push("--model", String(body.model));
   cmd.push("--", prompt);
-  const r = run(cmd, { cwd, timeoutMs: 60000 });
+  const r = run(cmd, { cwd, timeoutMs: 60000, env: profileEnv(prof) });
   agentsCache.at = 0;
-  return json({ ok: r.code === 0, id: parseBgId(r.code, r.out + r.err), out: (r.out + r.err).trim().slice(0, 2000) }, r.code === 0 ? 200 : 500);
+  return json({ ok: r.code === 0, id: parseBgId(r.code, r.out + r.err, prof), out: (r.out + r.err).trim().slice(0, 2000) }, r.code === 0 ? 200 : 500);
 }
 async function actResume(body: any) {
   const sid = String(body.sessionId || ""); const file = findSessionFile(sid);
   if (!file) return json({ error: "session not found" }, 404);
   const meta = transcriptInfo(file, basename(join(file, "..")));
   const cwd = meta?.cwd && existsSync(meta.cwd) ? meta.cwd : HOME;
+  const prof = profileById(body.profile); if (!prof) return json({ error: "unknown account" }, 400);
   const cmd = [CLAUDE_BIN, "--bg", "--resume", sid];
   if (body.prompt) cmd.push("--", String(body.prompt));
-  const r = run(cmd, { cwd, timeoutMs: 60000 });
+  const r = run(cmd, { cwd, timeoutMs: 60000, env: profileEnv(prof) });
   agentsCache.at = 0;
-  return json({ ok: r.code === 0, id: parseBgId(r.code, r.out + r.err), out: (r.out + r.err).trim().slice(0, 2000) }, r.code === 0 ? 200 : 500);
+  return json({ ok: r.code === 0, id: parseBgId(r.code, r.out + r.err, prof), out: (r.out + r.err).trim().slice(0, 2000) }, r.code === 0 ? 200 : 500);
 }
 async function actSend(body: any) {
   const key = normKey(String(body.target || "")); const text = String(body.text ?? "");
@@ -428,11 +513,12 @@ function actRm(body: any) {
   // "×" in the UI: remove a background session from the list. `claude rm` keeps the transcript, so the
   // conversation stays resumable from "Interactive sessions". A running session is stopped first.
   const id = String(body.id || ""); if (!/^[0-9a-f]{6,12}$/.test(id)) return json({ error: "bad id" }, 400);
-  const st = readJson(join(JOBS_DIR, id, "state.json"));
+  const prof = profileOfJob(id); const env = profileEnv(prof);
+  const st = prof ? readJson(join(prof.dir, "jobs", id, "state.json")) : null;
   let out = "";
-  if (st && st.state !== "done") out += (run([CLAUDE_BIN, "stop", id], { timeoutMs: 30000 }).out + "\n");
+  if (st && st.state !== "done") out += (run([CLAUDE_BIN, "stop", id], { timeoutMs: 30000, env }).out + "\n");
   const p = ptys.get(`job:${id}`); if (p) { p.kill(); ptys.delete(`job:${id}`); }
-  const r = run([CLAUDE_BIN, "rm", id], { timeoutMs: 30000 }); agentsCache.at = 0;
+  const r = run([CLAUDE_BIN, "rm", id], { timeoutMs: 30000, env }); agentsCache.at = 0;
   return json({ ok: r.code === 0, out: (out + r.out + r.err).trim() }, r.code === 0 ? 200 : 500);
 }
 
@@ -441,7 +527,7 @@ const STATS_CACHE = join(DATA_DIR, "stats_cache.json");
 let statsRunning = false;
 function refreshStats() {
   if (statsRunning) return; statsRunning = true;
-  const p = Bun.spawn(["nice", "-n", "10", "bun", join(import.meta.dir, "lib/stats.ts")], { stdout: "ignore", stderr: "pipe", env: { ...childEnv(), CCDECK_DATA_DIR: DATA_DIR } });
+  const p = Bun.spawn(["nice", "-n", "10", "bun", join(import.meta.dir, "lib/stats.ts")], { stdout: "ignore", stderr: "pipe", env: { ...childEnv(), QUARTERDECK_DATA_DIR: DATA_DIR } });
   p.exited.then(() => { statsRunning = false; });
 }
 setInterval(refreshStats, 5 * 60_000); setTimeout(refreshStats, 5000);
@@ -475,7 +561,7 @@ async function statsApi(daysN: number) {
 
 function actStop(body: any) {
   const id = String(body.id || ""); if (!/^[0-9a-f]{6,12}$/.test(id)) return json({ error: "bad id" }, 400);
-  const r = run([CLAUDE_BIN, "stop", id], { timeoutMs: 30000 }); agentsCache.at = 0;
+  const r = run([CLAUDE_BIN, "stop", id], { timeoutMs: 30000, env: profileEnv(profileOfJob(id)) }); agentsCache.at = 0;
   return json({ ok: r.code === 0, out: (r.out + r.err).trim() });
 }
 
@@ -533,7 +619,7 @@ function sessionChanges(sessionId: string) {
 // ───────────────────────────── push notifications ─────────────────────────────
 // Server-side, so they arrive with every page closed. Channels: Web Push (PWA / desktop
 // browser; tap opens the session) and optionally a dedicated Telegram bot.
-// State lives in ~/.config/ccdeck (outside the repo): vapid.json, subscriptions.json, config.json.
+// State lives in ~/.config/quarterdeck (outside the repo): vapid.json, subscriptions.json, config.json.
 mkdirSync(CONF_DIR, { recursive: true }); mkdirSync(DATA_DIR, { recursive: true });
 function confRead(name: string, dflt: any) { return readJson(join(CONF_DIR, name)) ?? dflt; }
 function confWrite(name: string, v: any) { const p = join(CONF_DIR, name); writeFileSync(p, JSON.stringify(v, null, 2), { mode: 0o600 }); chmodSync(p, 0o600); }
@@ -542,7 +628,7 @@ let vapid = confRead("vapid.json", null);
 if (!vapid) { vapid = webpush.generateVAPIDKeys(); confWrite("vapid.json", vapid); }
 // Apple rejects a "localhost" subject with 403 BadJwtToken, so use the real HTTPS origin.
 // VAPID subject: Apple's push service rejects "localhost" subjects (403 BadJwtToken) → use the real HTTPS origin.
-webpush.setVapidDetails(process.env.CCDECK_VAPID_SUBJECT || CONFIG.baseUrl || `mailto:${OWNER}`, vapid.publicKey, vapid.privateKey);
+webpush.setVapidDetails(process.env.QUARTERDECK_VAPID_SUBJECT || CONFIG.baseUrl || `mailto:${OWNER}`, vapid.publicKey, vapid.privateKey);
 type Sub = { subscription: any; label: string; at: string };
 let subs: Sub[] = confRead("subscriptions.json", []);
 const notifyConf = () => confRead("config.json", {}) as { baseUrl?: string; telegram?: { token: string; chatId: string }; notifyDone?: boolean };
@@ -573,7 +659,11 @@ async function sendAll(n: Note): Promise<{ push: number; pushFailed: number; tel
 }
 // A resumed/attached session keeps state "done" while it generates; only tempo turns "active" — count that as
 // working, so a follow-up reply finishing still triggers the "done" notification.
-const jobStateOf = (j: Job) => (j.tempo === "blocked" || j.state === "blocked" || (j.needs && j.state !== "done") ? "blocked" : j.tempo === "active" ? "working" : j.state);
+// Real phase first (transcript), then state.json: a reply in progress is "working" even if state.json still
+// says blocked; a finished turn is not "working" even if state.json still says so.
+const jobStateOf = (j: Job) => (j.phase === "working" ? "working" : j.phase === "waiting" ? "blocked"
+  : j.tempo === "blocked" || j.state === "blocked" || (j.needs && j.state !== "done") ? "blocked"
+  : j.phase === "idle" && j.state === "working" ? "done" : j.tempo === "active" ? "working" : j.state);
 const textOf = (v: any) => (v == null ? "" : typeof v === "string" ? v : v.text || v.question || v.result || v.headline || JSON.stringify(v));
 let lastStates: Map<string, string> | null = null;
 function watchJobs() {
@@ -648,7 +738,7 @@ async function handle(req: Request, server: any): Promise<Response | undefined> 
       const transcripts = listTranscripts(Number(url.searchParams.get("limit") || 40), jobSids);
       const tmux = listTmux();
       const cwds = [...new Set([...jobs.map((j) => j.cwd), ...transcripts.map((t) => t.cwd)].filter(Boolean))].slice(0, 25);
-      return json({ jobs, transcripts, tmux, cwds, ptys: [...ptys.keys()], who: auth.who, now: Date.now() });
+      return json({ jobs, transcripts, tmux, cwds, ptys: [...ptys.keys()], accounts: accountsStatus(), who: auth.who, now: Date.now() });
     }
     if (path === "/api/job") {
       const id = url.searchParams.get("id") || "";
@@ -677,7 +767,7 @@ async function handle(req: Request, server: any): Promise<Response | undefined> 
         confWrite("subscriptions.json", subs); return json({ ok: true, devices: subs.length });
       }
       if (path === "/api/push/unsubscribe") { subs = subs.filter((x) => x.subscription.endpoint !== body.endpoint); confWrite("subscriptions.json", subs); return json({ ok: true }); }
-      if (path === "/api/push/test") return json(await sendAll({ title: "🔔 ccdeck test", body: `Notifications work on this channel (${new Date().toLocaleTimeString()}).`, url: "/", tag: "ccdeck-test" }));
+      if (path === "/api/push/test") return json(await sendAll({ title: "🔔 Quarterdeck test", body: `Notifications work on this channel (${new Date().toLocaleTimeString()}).`, url: "/", tag: "quarterdeck-test" }));
       if (path === "/api/prompt") {
         // Ensures an attach client exists so the screen mirror is live, then reports the current menu (if any).
         const key = normKey(String(body.target || ""));
@@ -756,8 +846,8 @@ function tailscaleIP(): string | null {
   const r = run([TAILSCALE, "ip", "-4"], { timeoutMs: 5000 });
   const ip = r.out.trim().split("\n")[0]; return /^100\./.test(ip) ? ip : null;
 }
-const hosts = ["127.0.0.1"]; if (BIND_TS) { const ip = tailscaleIP(); if (ip) hosts.push(ip); else console.warn("[ccdeck] no Tailscale IP; loopback only"); }
+const hosts = ["127.0.0.1"]; if (BIND_TS) { const ip = tailscaleIP(); if (ip) hosts.push(ip); else console.warn("[quarterdeck] no Tailscale IP; loopback only"); }
 for (const hostname of hosts) {
   Bun.serve({ hostname, port: PORT, fetch: handle as any, websocket: websocket as any });
-  console.log(`[ccdeck] listening http://${hostname}:${PORT}  (owner=${OWNER})`);
+  console.log(`[quarterdeck] listening http://${hostname}:${PORT}  (owner=${OWNER})`);
 }

@@ -250,3 +250,6 @@ header#top { min-width: 0; }
 .ev.activity.warn .dots i { background: var(--warn); }
 @keyframes ccdots { 0%, 80%, 100% { opacity: .3; transform: translateY(0); } 40% { opacity: 1; transform: translateY(-3px); } }
 @media (prefers-reduced-motion: reduce) { .ev.activity .dots i { animation: none; opacity: .7; } }
+
+/* account badge */
+.chip.acct { background: #2a2440; color: #b9a8ff; }

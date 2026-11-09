@@ -8,7 +8,7 @@ import { homedir } from "node:os";
 
 const HOME = homedir();
 const PROJECTS = join(HOME, ".claude/projects");
-const KB = process.env.CCDECK_DATA_DIR || join(HOME, ".local/share/ccdeck");
+const KB = process.env.QUARTERDECK_DATA_DIR || join(HOME, ".local/share/quarterdeck");
 const CACHE = join(KB, "stats_cache.json");
 const KEEP_DAYS = 35;
 const SKIP_OLDER_MS = 31 * 86400000;

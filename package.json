@@ -1,5 +1,5 @@
 {
-  "name": "ccdeck",
+  "name": "quarterdeck",
   "type": "module",
   "private": true,
   "devDependencies": {

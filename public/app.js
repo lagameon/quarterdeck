@@ -49,9 +49,19 @@ async function api(path, body) {
 const short = (p) => (p || "").replace(/^\/Users\/[^/]+/, "~");
 const needsText = (n) => (n == null ? "" : typeof n === "string" ? n : n.text || n.question || JSON.stringify(n));
 const outText = (o) => (o == null ? "" : typeof o === "string" ? o : o.result || o.text || o.headline || JSON.stringify(o));
+// ───────────── accounts ─────────────
+const multiAccount = () => (data.accounts || []).length > 1;
+const acctOf = (id) => (data.accounts || []).find((a) => a.id === (id || "default"));
+const acctLabel = (id) => { const a = acctOf(id); return a?.email ? a.email.split("@")[0] : (id || "default"); };
+const acctBadge = (id) => (multiAccount() ? `<span class="chip acct" title="${esc(acctOf(id)?.email || id)}">${esc(acctLabel(id))}</span>` : "");
+function acctOptions(selected) {
+  return (data.accounts || []).map((a) => `<option value="${esc(a.id)}" ${a.id === selected ? "selected" : ""} ${a.loggedIn ? "" : "disabled"}>${esc(a.email || a.id)}${a.isDefault ? " (default)" : ""}${a.loggedIn ? "" : " — not logged in"}</option>`).join("");
+}
 const isBlocked = (j) => j.tempo === "blocked" || j.state === "blocked" || (j.needs && j.state !== "done");
 // A resumed/attached session keeps state "done" while it generates; only tempo turns "active".
-const jobState = (j) => (isBlocked(j) ? "blocked" : j.tempo === "active" ? "working" : j.state);
+// Prefer the transcript-derived phase (server) over the lagging state.json fields.
+const jobState = (j) => (j.phase === "working" ? "working" : j.phase === "waiting" ? "blocked"
+  : isBlocked(j) ? "blocked" : j.phase === "idle" && j.state === "working" ? "done" : j.tempo === "active" ? "working" : j.state);
 
 // ───────────── state + polling + notifications ─────────────
 let data = { jobs: [], transcripts: [], tmux: [], cwds: [], ptys: [] };
@@ -66,7 +76,7 @@ async function poll() {
     if (v === "list") { await loadStats(); renderDash(); } else refreshMeta();
     renderSide();
     const blocked = data.jobs.filter(isBlocked).length;
-    document.title = blocked ? `(${blocked}) ccdeck` : "ccdeck";
+    document.title = blocked ? `(${blocked}) Quarterdeck` : "Quarterdeck";
   } catch (e) { console.warn(e); }
 }
 function notifyTransitions() {
@@ -97,7 +107,7 @@ $("#notif").onclick = async () => {
       const ios = /iPhone|iPad/.test(navigator.userAgent);
       return toast(ios ? "Push needs the HTTPS address, opened from the Home Screen app (see README)" : "Push needs HTTPS or localhost (see README)", 6000);
     }
-    if (!("PushManager" in window)) return toast("This browser has no Web Push. On iPhone: Share → Add to Home Screen, then open ccdeck from the Home Screen.", 7000);
+    if (!("PushManager" in window)) return toast("This browser has no Web Push. On iPhone: Share → Add to Home Screen, then open Quarterdeck from the Home Screen.", 7000);
     const reg = await navigator.serviceWorker.register("/sw.js"); await navigator.serviceWorker.ready;
     let sub = await reg.pushManager.getSubscription();
     if (!sub) {
@@ -121,7 +131,7 @@ function allItems() {
     ...jobs.map((j) => ({ href: `#/job/${j.id}`, group: jobState(j) === "blocked" ? "Needs you" : jobState(j) === "working" ? "Running" : "Finished", cls: jobState(j), name: j.name, sub: isBlocked(j) ? needsText(j.needs) || j.detail : j.detail, age: j.updatedAt, key: `${j.name} ${j.id} ${j.detail} ${j.cwd}` })),
     ...data.transcripts.map((t) => ({ href: `#/t/${t.sessionId}`, group: "Interactive", cls: "", name: t.title, sub: t.lastPrompt, age: t.mtime, key: `${t.title} ${t.lastPrompt} ${t.cwd}` })),
     ...data.tmux.map((s) => ({ href: `#/tmux/${encodeURIComponent(s.name)}`, group: "tmux", cls: "", name: `tmux: ${s.name}`, sub: `${s.command} · ${short(s.path)}`, age: s.activity, key: `tmux ${s.name} ${s.path}` })),
-    { href: "#/shell", group: "tmux", cls: "", name: "shell (tmux ccdeck)", sub: "persistent shell", age: "", key: "shell ccdeck" },
+    { href: "#/shell", group: "tmux", cls: "", name: "shell (tmux quarterdeck)", sub: "persistent shell", age: "", key: "shell Quarterdeck" },
   ];
 }
 function itemHtml(it, extra = "") {
@@ -152,7 +162,7 @@ function jobCard(j) {
   const dup = (nt && nt === j.detail) || (j.state === "done" && ot && (ot.startsWith(j.detail) || j.detail.startsWith(ot.slice(0, 40))));
   const detail = dup ? "" : `<div class="l2">${esc(j.detail || j.intent)}</div>`;
   return `<a class="card ${st}" href="#/job/${j.id}">
-    <div class="l1"><span class="name">${esc(j.name)}</span>${live}<span class="chip ${st}">${esc(st)}</span><span class="age">${ago(j.updatedAt)}</span><button class="x" data-rm="${j.id}" title="Close and remove from the list (transcript is kept)">×</button></div>
+    <div class="l1"><span class="name">${esc(j.name)}</span>${acctBadge(j.profile)}${live}<span class="chip ${st}">${esc(st)}</span><span class="age">${ago(j.updatedAt)}</span><button class="x" data-rm="${j.id}" title="Close and remove from the list (transcript is kept)">×</button></div>
     ${detail}${needs}${res}<div class="l2">${esc(j.id)} · ${esc(short(j.cwd))}</div></a>`;
 }
 const trCard = (t) => `<a class="card" href="#/t/${t.sessionId}"><div class="l1"><span class="name">${esc(t.title)}</span><span class="age">${ago(t.mtime)}</span></div><div class="l2">${esc(t.lastPrompt)}</div><div class="l2">${esc(short(t.cwd))}</div></a>`;
@@ -176,7 +186,7 @@ function renderOverview() {
   const st = stats; const el = $("#overview"); if (!el) return;
   const jobsNow = { run: data.jobs.filter((j) => jobState(j) === "working").length, wait: data.jobs.filter(isBlocked).length,
     doneToday: data.jobs.filter((j) => j.state === "done" && (j.updatedAt || "").slice(0, 10) === new Date().toISOString().slice(0, 10)).length };
-  const sig = JSON.stringify([st?.updatedAt, st?.quota, jobsNow, wide()]); if (sig === overviewSig) return; overviewSig = sig;
+  const sig = JSON.stringify([st?.updatedAt, st?.quota, jobsNow, wide(), data.accounts]); if (sig === overviewSig) return; overviewSig = sig;
   if (!st?.ready) { el.innerHTML = `<div class="empty">building usage stats…</div>`; return; }
   const t = st.days[st.days.length - 1];
   const tile = (label, val, sub = "") => `<div class="tile"><div class="tv">${val}</div><div class="tl">${label}</div>${sub ? `<div class="ts2">${sub}</div>` : ""}</div>`;
@@ -194,13 +204,16 @@ function renderOverview() {
   const quota = !q ? "" : q.bars.length ? (q.ok ? q.bars.map(qBar).join("")
       : `<div class="tile warn"><div class="tv">⚠</div><div class="tl">Quota unavailable</div><div class="ts2">data is ${q.ageHours}h old${q.err ? " (collector error)" : ""}; not showing stale numbers</div></div>`)
     : `<div class="tile warn"><div class="tv">⚠</div><div class="tl">Quota</div><div class="ts2">${esc(q.err || "no data")}</div></div>`;
+  const acctTiles = multiAccount() ? (data.accounts || []).map((a) => a.loggedIn
+    ? tile(`Account${a.isDefault ? " (default)" : ""}`, esc(acctLabel(a.id)), `${esc(a.email || "")}${a.planTier ? " · " + esc(a.planTier) : ""}${a.loginExpiresAt ? " · login until " + esc(a.loginExpiresAt.slice(5, 10)) : ""}`)
+    : `<div class="tile warn"><div class="tv">⚠</div><div class="tl">Account ${esc(a.id)} not logged in</div><div class="ts2">run <code>CLAUDE_CONFIG_DIR=${esc(a.dir)} claude auth login</code></div></div>`).join("") : "";
   const models = Object.entries(t.models || {}).sort((a, b) => b[1] - a[1]).map(([m, v]) => `${esc(m)} ${fmtTok(v)}`).join(" · ");
   el.innerHTML = `<h2>Today<span class="count">${esc(t.date)}</span><span class="ov-upd">stats updated ${ago(st.updatedAt) === "now" ? "just now" : `${ago(st.updatedAt)} ago`}</span></h2>
     <div class="tiles">
       ${tile("running", jobsNow.run)}${tile("needs you", jobsNow.wait)}${tile("done today", jobsNow.doneToday)}
       ${tile("active sessions", t.sessions)}${tile("your messages", t.prompts)}${tile("Claude turns", t.turns, `${t.tools} tool calls`)}
       ${tile("output tokens", fmtTok(t.out), models)}${tile("input tokens", fmtTok(t.inp + t.cr), `${fmtTok(t.cr)} from cache`)}
-      ${quota}
+      ${quota}${acctTiles}
     </div>
     <div class="charts">
       ${barChart("Output tokens per day (14 days)", st.days, (d) => d.out, (d) => `${d.date}<br>output ${fmtTok(d.out)} · input ${fmtTok(d.inp + d.cr)}<br>${d.turns} turns · ${d.tools} tool calls`, fmtTok)}
@@ -245,7 +258,7 @@ function renderDash() {
     section("Finished background sessions", rest, jobCard, { limit: 8, key: "done" }) +
     section("Interactive sessions (resume)", data.transcripts, trCard, { limit: 8, key: "tr" }) +
     section("tmux", data.tmux, tmuxCard, { empty: "no tmux sessions" }) +
-    `<p><button id="shellBtn">Open shell (tmux “ccdeck”)</button></p></div></div>`;
+    `<p><button id="shellBtn">Open shell (tmux “quarterdeck”)</button></p></div></div>`;
   $("#dash").scrollTop = y;
   el.querySelectorAll("[data-more]").forEach((b) => (b.onclick = () => { showAll[b.dataset.more] = true; renderDash(); }));
   $("#shellBtn").onclick = () => (location.hash = "#/shell");
@@ -287,7 +300,7 @@ function go() {
     const t = data.transcripts.find((x) => x.sessionId === r.id);
     cur = { kind: "transcript", id: r.id, sessionId: r.id, title: t?.title || r.id };
   } else if (r.view === "tmux") cur = { kind: "tmux", id: r.id, target: `tmux:${r.id}`, title: `tmux: ${r.id}` };
-  else if (r.view === "shell") cur = { kind: "shell", id: "ccdeck", target: "shell:", title: "shell (tmux ccdeck)" };
+  else if (r.view === "shell") cur = { kind: "shell", id: "quarterdeck", target: "shell:", title: "shell (tmux quarterdeck)" };
   else { location.hash = ""; return; }
   $("#subtitle").textContent = cur.title;
   const has = { chat: !!cur.sessionId, term: !!cur.target, split: !!(cur.sessionId && cur.target), changes: !!cur.sessionId };
@@ -311,14 +324,15 @@ function refreshMeta() {
     if (!j) { m.innerHTML = `<span>${esc(cur.id)}</span>`; return; }
     if (!cur.sessionId && j.sessionId) { cur.sessionId = j.sessionId; go(); return; }
     const st = jobState(j); const nt = isBlocked(j) ? needsText(j.needs) : "";
-    m.innerHTML = `<b class="meta-name">${esc(j.name)}</b><span class="chip ${st}">${esc(st)}</span><span class="meta-detail" onclick="this.classList.toggle('open')">${esc(j.detail)}</span><span>${esc(short(j.cwd))}</span><span>${esc(j.id)}</span>
+    m.innerHTML = `<b class="meta-name">${esc(j.name)}</b><span class="chip ${st}">${esc(st)}</span>${acctBadge(j.profile)}<span class="meta-detail" onclick="this.classList.toggle('open')">${esc(j.detail)}</span><span>${esc(short(j.cwd))}</span><span>${esc(j.id)}</span>
       <span class="spacer"></span><button id="stopBtn" class="danger">Stop</button><button id="rmBtn" title="Close and remove from the list (transcript is kept)">× Close</button>${nt && nt !== j.detail ? `<div class="needs">⚑ ${esc(nt)}</div>` : ""}`;
     $("#rmBtn").onclick = () => removeJob(j.id);
     $("#stopBtn").onclick = async () => { if (!confirm(`Stop session ${j.name}? (conversation is kept)`)) return; try { await api("/api/stop", { id: j.id }); toast("stopped"); poll(); } catch (e) { toast(e.message); } };
   } else if (cur.kind === "transcript") {
     const t = data.transcripts.find((x) => x.sessionId === cur.id);
-    m.innerHTML = `<b class="meta-name">${esc(cur.title)}</b><span class="chip">interactive transcript</span><span>${esc(short(t?.cwd))}</span><span class="spacer"></span><button id="resumeBtn">Resume in background</button>`;
+    m.innerHTML = `<b class="meta-name">${esc(cur.title)}</b><span class="chip">interactive transcript</span><span>${esc(short(t?.cwd))}</span><span class="spacer"></span>${multiAccount() ? `<select id="resumeProfile" title="Account that resumes this conversation">${acctOptions(cur.resumeProfile || "default")}</select>` : ""}<button id="resumeBtn">Resume in background</button>`;
     $("#resumeBtn").onclick = () => resume("");
+    if ($("#resumeProfile")) $("#resumeProfile").onchange = (e) => { cur.resumeProfile = e.target.value; };
   } else m.innerHTML = `<b class="meta-name">${esc(cur.title)}</b><span class="chip">${esc(cur.kind)}</span><span>persistent — closing this page does not stop it</span>`;
 }
 
@@ -379,11 +393,14 @@ function renderActivity() {
   const j = cur.kind === "job" ? data.jobs.find((x) => x.id === cur.id) : null;
   // "Working" = the session says so, OR we sent a message and the session hasn't yet reported done/waiting
   // with an update newer than that send (the session list refreshes only every few seconds).
-  const settledAfterSend = j && cur.awaitingSince && (j.state === "done" || isBlocked(j)) && Date.parse(j.updatedAt) > cur.awaitingSince + 1000;
-  if (settledAfterSend || (cur.awaitingSince && Date.now() - cur.awaitingSince > 30 * 60_000)) cur.awaitingSince = null;
+  // After a send, the transcript needs a moment to show the new turn: bridge that gap with awaitingSince,
+  // and drop it once the server reports any phase newer than the send (working → the phase takes over).
+  const phaseAfterSend = j && cur.awaitingSince && j.activityAt && j.activityAt > cur.awaitingSince;
+  if (phaseAfterSend || (cur.awaitingSince && Date.now() - cur.awaitingSince > 10 * 60_000)) cur.awaitingSince = null;
   // Note: a resumed/attached session keeps state "done" while generating; only tempo turns "active".
-  const working = !!(j && !isBlocked(j) && (j.state === "working" || j.tempo === "active" || cur.awaitingSince));
-  const detailFresh = j && !(cur.awaitingSince && Date.parse(j.updatedAt) <= cur.awaitingSince); // don't show the previous task's status
+  const menuShown = !$("#promptCard")?.hidden; // waiting for a choice → the option card says so, no bubble
+  const working = !!(j && !menuShown && (j.phase ? j.phase === "working" : (!isBlocked(j) && (j.state === "working" || j.tempo === "active"))) || (j && cur.awaitingSince && !menuShown));
+  const detailFresh = j && !(cur.awaitingSince && Date.parse(j.updatedAt) <= cur.awaitingSince) && Date.parse(j.updatedAt) >= (j.activityAt || 0) - 60_000; // don't show a stale status line
   const pending = [...ev.querySelectorAll(".ev.user.pending")];
   for (const p of pending) if (Date.now() - Number(p.dataset.at) > 30_000) p.querySelector(".pstate").textContent = "not confirmed yet";
   let text = "", cls = "";
@@ -539,7 +556,7 @@ $("#composer").onsubmit = async (e) => {
 };
 async function resume(prompt) {
   if (!confirm("Resume this conversation as a background session? (If it is still open in a terminal, Claude starts a copy.)")) return;
-  const r = await api("/api/resume", { sessionId: cur.id, prompt });
+  const r = await api("/api/resume", { sessionId: cur.id, prompt, profile: $("#resumeProfile")?.value || "default" });
   toast(r.out.split("\n")[0] || "resumed");
   await poll();
   if (r.id) location.hash = `#/job/${r.id}`;
@@ -587,6 +604,7 @@ function teardown() {
 function openNew() {
   $("#cwdList").innerHTML = data.cwds.map((c) => `<option value="${esc(c)}">`).join("");
   if (!$("#newCwd").value) $("#newCwd").value = data.cwds[0] || "";
+  $("#newProfileRow").hidden = !multiAccount(); $("#newProfile").innerHTML = acctOptions($("#newProfile").value || "default");
   $("#newDlg").showModal(); $("#newPrompt").focus();
 }
 $("#newBtn").onclick = openNew;
@@ -594,7 +612,7 @@ $("#newPrompt").addEventListener("keydown", (e) => { if (e.key === "Enter" && (e
 $("#newDlg").addEventListener("close", async () => {
   if ($("#newDlg").returnValue !== "ok") return;
   try {
-    const r = await api("/api/new", { cwd: $("#newCwd").value, name: $("#newName").value, prompt: $("#newPrompt").value, permissionMode: $("#newMode").value });
+    const r = await api("/api/new", { cwd: $("#newCwd").value, name: $("#newName").value, prompt: $("#newPrompt").value, permissionMode: $("#newMode").value, profile: $("#newProfile").value || "default" });
     toast(r.out.split("\n")[0] || "started"); $("#newPrompt").value = ""; $("#newName").value = "";
     await poll(); if (r.id) location.hash = `#/job/${r.id}`;
   } catch (e) { toast(e.message, 5000); }

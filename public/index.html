@@ -7,7 +7,7 @@
 <meta name="theme-color" content="#0f1115">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-<title>ccdeck</title>
+<title>Quarterdeck</title>
 <link rel="manifest" href="/manifest.webmanifest">
 <link rel="icon" href="/icon.svg" type="image/svg+xml">
 <link rel="apple-touch-icon" href="/icon-180.png">
@@ -17,7 +17,7 @@
 <body>
 <header id="top">
   <button id="back" class="icon" title="Back to dashboard" hidden>‹</button>
-  <a id="home" href="#" class="brand">ccdeck</a>
+  <a id="home" href="#" class="brand">Quarterdeck</a>
   <div id="title"><span id="subtitle"></span></div>
   <div id="tabs" hidden>
     <button data-tab="chat" class="tab" title="Alt+1">Chat</button>
@@ -63,6 +63,7 @@
     <h3>New background session</h3>
     <label>Directory<input id="newCwd" list="cwdList" required></label>
     <datalist id="cwdList"></datalist>
+    <label id="newProfileRow" hidden>Account<select id="newProfile"></select></label>
     <label>Name (optional)<input id="newName"></label>
     <label>Prompt<textarea id="newPrompt" rows="5" required></textarea></label>
     <label>Permission mode
