@@ -131,8 +131,10 @@ function whoisCheck(addr: string): { ok: boolean; who: string } {
       res = { ok: login === OWNER && tags.length === 0, who: `${login}@${d?.Node?.ComputedName || d?.Node?.Name || addr}`, at: Date.now() };
     } catch {}
   }
-  whoisCache.set(addr, res);
-  if (!res.ok) console.warn(`[auth] denied ${addr} (${res.who})`);
+  // Cache only real answers: if `tailscale whois` itself failed (CLI hiccup, daemon restarting), deny this
+  // request but retry on the next one instead of locking the device out for the full cache period.
+  if (r.code === 0) whoisCache.set(addr, res);
+  if (!res.ok) console.warn(`[auth] denied ${addr} (${res.who})${r.code === 0 ? "" : ` — whois failed (exit ${r.code}): ${r.err.trim().slice(0, 120)}`}`);
   return res;
 }
 // Block cross-site requests (a page on another origin poking the API / WS from an allowed device).
