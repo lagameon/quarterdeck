@@ -360,7 +360,7 @@ function setTab(tab, byUser) {
 // ───────────── chat (rendered transcript, live) ─────────────
 function openChat() {
   const ev = $("#events"); ev.innerHTML = `<div class="empty">loading…</div>`;
-  cur.toolEls = new Map(); cur.lastTs = 0;
+  cur.toolEls = new Map(); cur.lastTs = 0; cur.subs = new Map(); cur.bgs = new Map(); cur.agentIds = new Map();
   const ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws/tail?session=${encodeURIComponent(cur.sessionId)}`);
   cur.tailWs = ws; const ctx = cur;
   ws.onmessage = (m) => {
@@ -421,14 +421,78 @@ function renderActivity() {
 }
 setInterval(renderActivity, 1000);
 
+// ───────────── live sub-agents & background shells (Chat view) ─────────────
+function markBgDone(taskId, status) {
+  const bg = cur?.bgs.get(taskId);
+  if (bg) {
+    bg.done = true; bg.box.querySelector(".bghead").textContent = `✓ background · ${status || "finished"}`;
+    const st = bg.det.querySelector(".st"); st.textContent = `✓ background · ${status || "finished"}`; st.className = "st"; pollBg(taskId);
+  }
+  const tool = cur?.agentIds.get(taskId); const sub = tool && cur.subs.get(tool);
+  if (sub) { sub.done = true; pollSub(tool, true); }
+}
+async function pollSub(toolId, force) {
+  const ctx = cur, sub = ctx?.subs.get(toolId); if (!sub || (sub.busy && !force)) return;
+  sub.busy = true;
+  try {
+    const d = await api(`/api/subagent?session=${encodeURIComponent(ctx.sessionId)}&tool=${encodeURIComponent(toolId)}`);
+    if (ctx !== cur || !d.found) return;
+    // Async sub-agents finish with a task notification (markBgDone); the file's own status is display-only —
+    // right after launch it can briefly read "done" before the first step is written.
+    if (d.status === "done" && !sub.async) sub.done = true;
+    const evs = d.events || []; const lastTool = [...evs].reverse().find((x) => x.k === "tool");
+    const st = sub.det.querySelector(".st");
+    st.textContent = sub.done ? `✓ ${d.steps} steps` : `running · ${d.steps} steps${lastTool ? " · " + lastTool.name : ""}`;
+    st.className = `st ${sub.done ? "" : "pending"}`;
+    if (sub.det.open) {
+      sub.feed.innerHTML = `<div class="subhead">sub-agent${d.agentType ? " · " + esc(d.agentType) : ""}${d.model ? " · " + esc(d.model) : ""}${d.background ? " · background" : ""}</div>` +
+        evs.filter((x) => x.k === "tool" || x.k === "assistant").slice(-30).map((x) => x.k === "tool"
+          ? `<div class="subrow"><span class="tn">${esc(x.name)}</span> <span class="ts">${esc(x.summary)}</span></div>`
+          : `<div class="subrow say">${esc(String(x.text).slice(0, 300))}</div>`).join("");
+    }
+  } catch {} finally { sub.busy = false; }
+}
+async function pollBg(taskId) {
+  const ctx = cur, bg = ctx?.bgs.get(taskId); if (!bg || bg.busy) return;
+  bg.busy = true;
+  try {
+    const d = await api(`/api/bgout?session=${encodeURIComponent(ctx.sessionId)}&task=${encodeURIComponent(taskId)}`);
+    if (ctx !== cur) return;
+    const out = bg.box.querySelector(".bgout");
+    if (!d.exists) { out.textContent = bg.done ? "(output file no longer exists)" : "(no output yet)"; return; }
+    const lines = String(d.text || "").split("\n"); out.textContent = lines.slice(-30).join("\n") || "(empty)";
+    if (!bg.done) { const last = lines.filter((l) => l.trim()).pop() || ""; const st = bg.det.querySelector(".st"); st.textContent = `background · running${last ? " · " + last.slice(0, 40) : ""}`; }
+    if (!bg.done) bg.box.querySelector(".bghead").textContent = `⏳ background · running · updated ${ago(d.mtime)} ago`.replace("now ago", "just now");
+  } catch {} finally { bg.busy = false; }
+}
+setInterval(() => {
+  if (!cur?.sessionId || $("#chat").hidden || !cur.subs) return;
+  [...cur.subs.entries()].filter(([, x]) => !x.done).slice(-6).forEach(([id]) => pollSub(id));
+  [...cur.bgs.entries()].filter(([, x]) => !x.done).slice(-6).forEach(([id]) => pollBg(id));
+}, 2000);
+
 function addEvent(e) {
   const ev = $("#events");
   const t = Date.parse(e.ts);
   if (t && t - cur.lastTs > 20 * 60_000) { const d = document.createElement("div"); d.className = "ts-label"; d.textContent = new Date(t).toLocaleString(); ev.appendChild(d); }
   if (t) cur.lastTs = t;
+  if (e.k === "bgdone") { markBgDone(e.taskId, e.status); return; }
   if (e.k === "result") {
     const det = cur.toolEls.get(e.toolId); if (!det) return;
-    const st = det.querySelector(".st"); st.textContent = e.isError ? "error" : "✓"; st.className = `st ${e.isError ? "err" : ""}`;
+    { const st = det.querySelector(".st"); st.textContent = e.isError ? "error" : "✓"; st.className = `st ${e.isError ? "err" : ""}`; } // generic first; special states below override it
+    const sub = cur.subs.get(e.toolId);
+    if (sub) { // sub-agent: async ones keep running until their task notification; sync ones are done now
+      if (e.agentId) cur.agentIds.set(e.agentId, e.toolId);
+      if (!/^Async agent launched/i.test(e.text || "")) sub.done = true;
+      else { sub.async = true; const st = det.querySelector(".st"); st.textContent = "sub-agent running"; st.className = "st pending"; } // launched in the background: done only when its task notification arrives
+    }
+    if (e.bg) { // background shell: a live output box, polled until its task notification arrives
+      const box = document.createElement("div"); box.className = "bgbox";
+      box.innerHTML = `<div class="bghead">⏳ background · running</div><pre class="bgout">…</pre>`;
+      det.appendChild(box); cur.bgs.set(e.bg, { det, box, done: false });
+      const st = det.querySelector(".st"); st.textContent = "background · running"; st.className = "st pending";
+      if (Date.now() - Date.parse(e.ts) < 10 * 60_000) det.open = true; // just started → show the live output
+    }
     const pre = document.createElement("pre"); pre.textContent = e.text || "(no output)"; det.appendChild(pre);
     return;
   }
@@ -444,6 +508,11 @@ function addEvent(e) {
     det.innerHTML = `<summary><span class="tn">${esc(e.name)}</span><span class="ts">${esc(e.summary)}</span><span class="st pending">…</span></summary>`;
     const pre = document.createElement("pre"); pre.textContent = e.input; det.appendChild(pre);
     cur.toolEls.set(e.toolId, det); div.appendChild(det);
+    if (e.name === "Agent" || e.name === "Task") {
+      const feed = document.createElement("div"); feed.className = "subfeed"; feed.textContent = "…"; det.appendChild(feed);
+      cur.subs.set(e.toolId, { det, feed, done: false, steps: 0 });
+      det.addEventListener("toggle", () => det.open && pollSub(e.toolId, true));
+    }
   }
   ev.appendChild(div);
 }

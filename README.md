@@ -11,6 +11,7 @@ It is built directly on Claude Code's own background sessions (`claude --bg`, `c
 - **Dashboard** — background sessions grouped as *Needs you* / *Running* / *Finished*, with the question each one is waiting on or its result line; recent interactive transcripts (resumable); tmux sessions. The tab title shows how many sessions are waiting on you.
 - **Chat view** — the session transcript rendered as a conversation (Markdown, tool calls folded with their output), updating live. Readable on a phone, unlike a TUI.
 - **Terminal view** — the real Claude Code TUI (`claude attach <id>`) in xterm.js. One PTY per session on the server, shared by all your devices (tmux-style); the screen is replayed when you reconnect (mosh-style). A key bar provides Esc, ⇧Tab, arrows, 1/2/3, ^C for touch keyboards.
+- **Sub-agents & background shells** — an Agent call shows the sub-agent live (running / done, step count, latest tool) and, expanded, its own steps; a background Bash command shows its output tail live and turns ✓ when it finishes.
 - **Menus as buttons** — when Claude shows a numbered menu (a multiple-choice question, a permission prompt), the Chat view shows it as tappable buttons. The server keeps a headless terminal mirror of each attached session to see it.
 - **Composer** — works with CJK input methods; text is pasted into the session and submitted.
 - **Split view & changes** — on wide screens (≥ 900 px: laptop, iPad landscape) a session sidebar, chat beside the live terminal, and a *Changes* tab with the diffs of the files *this* session edited.

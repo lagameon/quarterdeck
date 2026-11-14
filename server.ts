@@ -183,17 +183,18 @@ type Job = {
 // a turn is in progress. Cached per file by mtime, so polling stays cheap.
 const END_SUBTYPES = new Set(["turn_duration", "away_summary"]);
 const phaseCache = new Map<string, { mtime: number; phase: "working" | "idle" | "waiting" }>();
-function transcriptPhase(file: string, tempo: string): { phase: "working" | "idle" | "waiting"; at: number } | null {
+function transcriptPhase(file: string, tempo: string, sidechain = false): { phase: "working" | "idle" | "waiting"; at: number } | null {
   let st; try { st = statSync(file); } catch { return null; }
-  const c = phaseCache.get(file);
-  let phase = c && c.mtime === st.mtimeMs ? c.phase : null;
+  const ck = sidechain ? file + "#side" : file;
+  const c2 = phaseCache.get(ck);
+  let phase = c2 && c2.mtime === st.mtimeMs ? c2.phase : null;
   if (!phase) {
     phase = "idle";
     const lines = readTail(file, 256_000).split("\n");
     for (let i = lines.length - 1; i >= 0; i--) {
       const l = lines[i]; if (!l.startsWith("{")) continue;
       let e: any; try { e = JSON.parse(l); } catch { continue; }
-      if (e.isSidechain) continue;
+      if (e.isSidechain && !sidechain) continue; // a sub-agent's own file is all sidechain entries
       if (e.type === "system") { if (END_SUBTYPES.has(e.subtype)) { phase = "idle"; break; } continue; }
       if (e.type === "assistant") {
         const sr = e.message?.stop_reason; const content = Array.isArray(e.message?.content) ? e.message.content : [];
@@ -203,7 +204,7 @@ function transcriptPhase(file: string, tempo: string): { phase: "working" | "idl
       }
       if (e.type === "user") { if (e.isMeta) continue; phase = "working"; break; }
     }
-    phaseCache.set(file, { mtime: st.mtimeMs, phase });
+    phaseCache.set(ck, { mtime: st.mtimeMs, phase });
   }
   // A crashed/abandoned turn must not look busy forever: no writes for 20 min and not active → idle.
   if (phase === "working" && Date.now() - st.mtimeMs > 20 * 60_000 && tempo !== "active") phase = "idle";
@@ -314,8 +315,9 @@ type Ev =
   | { k: "user"; id: string; ts: string; text: string }
   | { k: "assistant"; id: string; ts: string; text: string }
   | { k: "tool"; id: string; ts: string; name: string; summary: string; input: string; toolId: string }
-  | { k: "result"; id: string; ts: string; toolId: string; text: string; isError: boolean }
-  | { k: "system"; id: string; ts: string; text: string };
+  | { k: "result"; id: string; ts: string; toolId: string; text: string; isError: boolean; bg?: string; agentId?: string }
+  | { k: "system"; id: string; ts: string; text: string }
+  | { k: "bgdone"; id: string; ts: string; taskId: string; status: string };
 
 function clip(s: string, n: number) { return s.length > n ? s.slice(0, n) + `\n… [${s.length - n} more chars]` : s; }
 function toolSummary(name: string, inp: any): string {
@@ -328,22 +330,29 @@ function resultText(c: any): string {
   if (Array.isArray(c)) return c.map((x) => (x?.type === "text" ? x.text : x?.type === "image" ? "[image]" : "")).join("\n");
   return "";
 }
-function parseLine(line: string): Ev[] {
+function parseLine(line: string, allowSidechain = false): Ev[] {
   if (!line.startsWith("{")) return [];
   let d: any; try { d = JSON.parse(line); } catch { return []; }
-  if (d.isSidechain) return [];
+  if (d.isSidechain && !allowSidechain) return [];
   const ts = d.timestamp || "", uuid = d.uuid || "";
   const evs: Ev[] = [];
   if (d.type === "user") {
     const c = d.message?.content;
     if (typeof c === "string") {
       if (d.isMeta) return [];
+      // A background shell / async sub-agent finished: tell the page which one, so it can stop polling it.
+      const tn = c.startsWith("<task-notification>") ? c.match(/<task-id>([^<]+)<\/task-id>[\s\S]*?<status>([^<]+)<\/status>/) : null;
+      if (tn) evs.push({ k: "bgdone", id: `${uuid}:bg`, ts, taskId: tn[1].trim(), status: tn[2].trim() });
       if (c.startsWith("<task-notification>") || c.startsWith("<system-reminder>")) evs.push({ k: "system", id: uuid, ts, text: clip(c.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim(), 400) });
       else if (c.startsWith("<command-name>") || c.startsWith("<local-command")) evs.push({ k: "system", id: uuid, ts, text: clip(c.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim(), 300) });
       else evs.push({ k: "user", id: uuid, ts, text: c });
     } else if (Array.isArray(c)) {
       c.forEach((b: any, i: number) => {
-        if (b?.type === "tool_result") evs.push({ k: "result", id: `${uuid}:${i}`, ts, toolId: b.tool_use_id, text: clip(resultText(b.content), 4000), isError: !!b.is_error });
+        if (b?.type === "tool_result") {
+          const tur = d.toolUseResult && typeof d.toolUseResult === "object" ? d.toolUseResult : {};
+          evs.push({ k: "result", id: `${uuid}:${i}`, ts, toolId: b.tool_use_id, text: clip(resultText(b.content), 4000), isError: !!b.is_error,
+            ...(typeof tur.backgroundTaskId === "string" ? { bg: tur.backgroundTaskId } : {}), ...(typeof tur.agentId === "string" ? { agentId: tur.agentId } : {}) });
+        }
         else if (b?.type === "text" && !d.isMeta && !String(b.text).startsWith("<")) evs.push({ k: "user", id: `${uuid}:${i}`, ts, text: b.text });
       });
     }
@@ -752,6 +761,32 @@ async function handle(req: Request, server: any): Promise<Response | undefined> 
     if (path === "/api/changes") {
       const c = sessionChanges(url.searchParams.get("session") || "");
       return c ? json(c) : json({ error: "not found" }, 404);
+    }
+    if (path === "/api/subagent") {
+      // A sub-agent's own transcript lives in <session>/subagents/agent-<id>.jsonl; its .meta.json names the
+      // parent's tool_use id, which is how the Chat view finds it.
+      const sid = url.searchParams.get("session") || "", tool = url.searchParams.get("tool") || "";
+      const f = findSessionFile(sid); if (!f || !/^[\w-]{8,80}$/.test(tool)) return json({ error: "not found" }, 404);
+      const dir = join(f.replace(/\.jsonl$/, ""), "subagents");
+      let found: { meta: any; file: string } | null = null;
+      try { for (const m of readdirSync(dir)) if (m.endsWith(".meta.json")) { const meta = readJson(join(dir, m)); if (meta?.toolUseId === tool) { found = { meta, file: join(dir, m.replace(/\.meta\.json$/, ".jsonl")) }; break; } } } catch {}
+      if (!found || !existsSync(found.file)) return json({ found: false });
+      const evs = readTail(found.file, 600_000).split("\n").flatMap((l) => parseLine(l, true));
+      const ph = transcriptPhase(found.file, "", true);
+      const steps = evs.filter((e) => e.k === "tool").length;
+      return json({ found: true, description: found.meta.description || "", agentType: found.meta.agentType || "", model: found.meta.model || "", background: found.meta.requestShape === "background",
+        status: ph?.phase === "working" ? "running" : "done", updatedAt: ph?.at || 0, steps, events: evs.slice(-120) });
+    }
+    if (path === "/api/bgout") {
+      // Output of a background shell: only <tmp>/claude-<uid>/<project>/<session>/tasks/<task>.output.
+      const sid = url.searchParams.get("session") || "", task = url.searchParams.get("task") || "";
+      if (!/^[0-9a-f-]{8,64}$/i.test(sid) || !/^[a-z0-9]{4,24}$/i.test(task)) return json({ error: "bad id" }, 400);
+      const root = `/private/tmp/claude-${process.getuid?.() ?? ""}`;
+      let file = "";
+      try { for (const proj of readdirSync(root)) { const c = join(root, proj, sid, "tasks", `${task}.output`); if (existsSync(c)) { file = c; break; } } } catch {}
+      if (!file) return json({ exists: false });
+      const st = statSync(file);
+      return json({ exists: true, size: st.size, mtime: st.mtimeMs, text: readTail(file, 12_000) });
     }
     if (path === "/api/transcript-meta") {
       const f = findSessionFile(url.searchParams.get("session") || "");

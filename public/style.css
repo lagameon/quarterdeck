@@ -267,3 +267,15 @@ header#top { min-width: 0; }
 .pc-head { flex-wrap: wrap; }
 .pc-nav { margin-left: auto; display: inline-flex; gap: 6px; }
 .pc-nav button { font-size: 13px; padding: 4px 12px; }
+
+/* live sub-agents & background shells */
+.subfeed { margin: 0 8px 8px; font-size: 12px; border-left: 2px solid var(--accent2); padding-left: 8px; }
+.subfeed .subhead { color: var(--dim); margin-bottom: 4px; }
+.subfeed .subrow { font-family: var(--mono); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.subfeed .subrow.say { font-family: inherit; white-space: normal; color: var(--text); margin: 4px 0; }
+.subfeed .tn { color: var(--accent); }
+.subfeed .ts { color: var(--dim); }
+details.tool:not([open]) .subfeed { display: none; }
+.bgbox { margin: 0 8px 8px; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
+.bgbox .bghead { font-size: 12px; color: var(--accent2); padding: 4px 8px; background: var(--panel2); }
+.bgbox .bgout { margin: 0; border: none; border-radius: 0; max-height: 240px; }
