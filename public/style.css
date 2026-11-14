@@ -279,3 +279,49 @@ details.tool:not([open]) .subfeed { display: none; }
 .bgbox { margin: 0 8px 8px; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
 .bgbox .bghead { font-size: 12px; color: var(--accent2); padding: 4px 8px; background: var(--panel2); }
 .bgbox .bgout { margin: 0; border: none; border-radius: 0; max-height: 240px; }
+
+/* v5: UI review round — bugs, phone home, slimmer session page, long-session reading */
+button:disabled { opacity: .45; cursor: default; }
+.ev.assistant th, .ev.assistant td { min-width: 4.5em; overflow-wrap: normal; word-break: normal; }
+.card .x { min-width: 36px; min-height: 32px; margin: -8px -8px -8px 0; padding: 4px 8px; }
+.card .needs { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+.card .l2.lm .chip { margin-right: 6px; }
+.hint { position: relative; padding-right: 36px; }
+.hint .hx { position: absolute; top: 6px; right: 6px; background: none; border: none; color: var(--dim); font-size: 16px; padding: 2px 8px; }
+.ov-line { display: flex; gap: 8px; width: 100%; text-align: left; align-items: center; background: var(--panel); color: var(--dim); font-size: 13px; padding: 9px 12px; border-radius: 10px; margin: 6px 0; }
+.ov-line span:last-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ov-x { margin-left: auto; background: none; border: none; color: var(--dim); font-size: 14px; padding: 0 6px; }
+#dashTop { margin-bottom: 4px; }
+/* session header: one row, details behind ⋯ */
+#meta .meta-row { flex: 1 1 100%; display: flex; gap: 8px; align-items: center; min-width: 0; }
+#meta .meta-row .meta-detail { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: block; cursor: pointer; }
+#meta .meta-row .meta-name { display: none; }
+#meta .meta-row .chip, #meta .meta-row button { flex: none; }
+#moreBtn { font-size: 15px; line-height: 1; padding: 2px 10px; }
+#meta .meta-more { width: 100%; background: var(--panel2); border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; margin-top: 2px; }
+#meta .mm-detail { color: var(--text); white-space: pre-wrap; overflow-wrap: anywhere; margin-bottom: 6px; }
+#meta .mm-row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+/* paths: file name first, folder dimmed */
+.pp { display: inline-flex; gap: 6px; align-items: baseline; max-width: 100%; min-width: 0; vertical-align: bottom; }
+.pp .pb { flex: none; }
+.pp .pd { color: var(--dim); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+details.file .p .pb { color: var(--text); }
+details.unchanged { margin-top: 10px; }
+details.unchanged > summary { color: var(--dim); font-size: 13px; cursor: pointer; padding: 4px 2px; }
+/* long sessions */
+.new-div { display: flex; align-items: center; gap: 10px; color: var(--accent); font-size: 12px; margin: 14px 0 10px; }
+.new-div::before, .new-div::after { content: ""; flex: 1; border-top: 1px solid var(--accent); opacity: .5; }
+.earlier { text-align: center; margin: 6px 0 12px; }
+.earlier button { font-size: 13px; }
+#swBtn { font: 13px var(--mono); padding: 4px 8px; flex: none; }
+#swBtn.warn { color: var(--warn); border-color: #5a4a22; }
+@media (max-width: 899px) {
+  #meta .meta-row .meta-name { display: block; width: auto; flex: 0 1 auto; min-width: 0; }
+  #meta .meta-row .meta-detail { display: none; }
+}
+/* iPad portrait: sidebar from 760px, narrower */
+@media (min-width: 760px) and (max-width: 899px) {
+  #side { display: flex !important; width: 240px; }
+  body.in-session #home, body.in-session #newBtn { display: inline-block; }
+  body.in-session #findBtn { display: inline-block; }
+}

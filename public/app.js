@@ -17,6 +17,8 @@ DOMPurify.addHook("afterSanitizeAttributes", (node) => {
 const md = (s) => DOMPurify.sanitize(marked.parse(String(s ?? ""), { breaks: true, gfm: true }));
 // Layout follows width, not device type: an iPad with a keyboard or a MacBook gets the desktop layout.
 const wide = () => innerWidth >= 900;
+// The session sidebar fits from iPad-portrait width up (narrower than the two-column dashboard).
+const sideOn = () => innerWidth >= 760;
 const store = { get: (k) => { try { return localStorage.getItem(k); } catch { return null; } }, set: (k, v) => { try { localStorage.setItem(k, v); } catch {} } };
 
 function ago(t) {
@@ -47,12 +49,24 @@ async function api(path, body) {
   return d;
 }
 const short = (p) => (p || "").replace(/^\/Users\/[^/]+/, "~");
+// mcp__server__tool → tool (full name on hover). A bare path shows the file name first, the folder dimmed after it,
+// so the part that matters survives truncation on a phone.
+const toolName = (n) => (/^mcp__/.test(n || "") ? n.split("__").pop() : n);
+function pathHtml(p) {
+  const s = short(p); const i = s.replace(/\/$/, "").lastIndexOf("/");
+  return i < 0 ? `<span class="pb">${esc(s)}</span>` : `<span class="pp" title="${esc(s)}"><span class="pb">${esc(s.slice(i + 1))}</span><span class="pd">${esc(s.slice(0, i + 1))}</span></span>`;
+}
+const sumHtml = (x) => `<span class="ts">${/^[~/][^\s]*$/.test(short(x)) ? pathHtml(x) : esc(x)}</span>`;
 const needsText = (n) => (n == null ? "" : typeof n === "string" ? n : n.text || n.question || JSON.stringify(n));
 const outText = (o) => (o == null ? "" : typeof o === "string" ? o : o.result || o.text || o.headline || JSON.stringify(o));
 // ───────────── accounts ─────────────
 const multiAccount = () => (data.accounts || []).length > 1;
 const acctOf = (id) => (data.accounts || []).find((a) => a.id === (id || "default"));
-const acctLabel = (id) => { const a = acctOf(id); return a?.email ? a.email.split("@")[0] : (id || "default"); };
+const acctLabel = (id) => {
+  const a = acctOf(id); const local = a?.email ? a.email.split("@")[0] : "";
+  const clash = local && (data.accounts || []).some((b) => b.id !== a.id && (b.email || "").split("@")[0] === local);
+  return local && !clash ? local : (id || "default");
+};
 const acctBadge = (id) => (multiAccount() ? `<span class="chip acct" title="${esc(acctOf(id)?.email || id)}">${esc(acctLabel(id))}</span>` : "");
 function acctOptions(selected) {
   return (data.accounts || []).map((a) => `<option value="${esc(a.id)}" ${a.id === selected ? "selected" : ""} ${a.loggedIn ? "" : "disabled"}>${esc(a.email || a.id)}${a.isDefault ? " (default)" : ""}${a.loggedIn ? "" : " — not logged in"}</option>`).join("");
@@ -77,6 +91,7 @@ async function poll() {
     renderSide();
     const blocked = data.jobs.filter(isBlocked).length;
     document.title = blocked ? `(${blocked}) Quarterdeck` : "Quarterdeck";
+    const sw = $("#swBtn"); sw.textContent = blocked ? `⚑ ${blocked}` : "☰"; sw.classList.toggle("warn", !!blocked);
   } catch (e) { console.warn(e); }
 }
 function notifyTransitions() {
@@ -152,18 +167,19 @@ function renderSide() {
 $("#sideFilter").addEventListener("input", renderSide);
 
 // ───────────── dashboard ─────────────
-function jobCard(j) {
+function jobCard(j, opt = {}) {
   const st = jobState(j);
-  const live = data.ptys.includes(`job:${j.id}`) ? `<span class="chip live">attached</span>` : "";
   const nt = isBlocked(j) ? needsText(j.needs) : "";
   const needs = nt ? `<div class="needs">⚑ ${esc(nt)}</div>` : "";
-  const res = j.state === "done" && outText(j.output) ? `<div class="result">${esc(outText(j.output).slice(0, 220))}</div>` : "";
   const ot = outText(j.output);
+  const res = j.state === "done" && ot ? `<div class="result">${esc(ot.slice(0, 220))}</div>` : "";
   const dup = (nt && nt === j.detail) || (j.state === "done" && ot && (ot.startsWith(j.detail) || j.detail.startsWith(ot.slice(0, 40))));
   const detail = dup ? "" : `<div class="l2">${esc(j.detail || j.intent)}</div>`;
+  // The section heading already says the state; only an unusual one (failed, stopped…) gets a chip.
+  const chip = opt.stateChip && st !== "done" ? `<span class="chip ${st}">${esc(st)}</span>` : "";
   return `<a class="card ${st}" href="#/job/${j.id}">
-    <div class="l1"><span class="name">${esc(j.name)}</span>${acctBadge(j.profile)}${live}<span class="chip ${st}">${esc(st)}</span><span class="age">${ago(j.updatedAt)}</span><button class="x" data-rm="${j.id}" title="Close and remove from the list (transcript is kept)">×</button></div>
-    ${detail}${needs}${res}<div class="l2">${esc(j.id)} · ${esc(short(j.cwd))}</div></a>`;
+    <div class="l1"><span class="name">${esc(j.name)}</span><span class="age">${ago(j.updatedAt)}</span><button class="x" data-rm="${j.id}" title="Close and remove from the list (transcript is kept)" aria-label="Close session">×</button></div>
+    ${detail}${needs}${res}<div class="l2 lm">${acctBadge(j.profile)}${chip}${esc(short(j.cwd))} · ${esc(j.id)}</div></a>`;
 }
 const trCard = (t) => `<a class="card" href="#/t/${t.sessionId}"><div class="l1"><span class="name">${esc(t.title)}</span><span class="age">${ago(t.mtime)}</span></div><div class="l2">${esc(t.lastPrompt)}</div><div class="l2">${esc(short(t.cwd))}</div></a>`;
 const tmuxCard = (s) => `<a class="card" href="#/tmux/${encodeURIComponent(s.name)}"><div class="l1"><span class="name">tmux: ${esc(s.name)}</span>${s.attached ? `<span class="chip live">${s.attached} attached</span>` : ""}<span class="age">${ago(s.activity)}</span></div><div class="l2">${esc(s.command)} · ${esc(short(s.path))} · ${s.windows} win</div></a>`;
@@ -178,15 +194,16 @@ let stats = null;
 async function loadStats() { try { stats = await api("/api/stats?days=14"); } catch (e) { console.warn(e); } }
 function dashSkeleton() {
   if ($("#overview")) return;
-  $("#dash").innerHTML = `<div id="overview"></div><div id="dashBody"></div>`;
+  $("#dash").innerHTML = `<div id="dashTop" hidden></div><div id="overview"></div><div id="dashBody"></div>`;
 }
 const fmtTok = (n) => n >= 1e9 ? (n / 1e9).toFixed(1) + "B" : n >= 1e6 ? (n / 1e6).toFixed(1) + "M" : n >= 1e3 ? Math.round(n / 1e3) + "k" : String(n);
 let overviewSig = "";
+const ovOpen = () => store.get("ovOpen") === "1"; // phones: the overview is one tappable line until opened
 function renderOverview() {
   const st = stats; const el = $("#overview"); if (!el) return;
   const jobsNow = { run: data.jobs.filter((j) => jobState(j) === "working").length, wait: data.jobs.filter(isBlocked).length,
-    doneToday: data.jobs.filter((j) => j.state === "done" && (j.updatedAt || "").slice(0, 10) === new Date().toISOString().slice(0, 10)).length };
-  const sig = JSON.stringify([st?.updatedAt, st?.quota, jobsNow, wide(), data.accounts]); if (sig === overviewSig) return; overviewSig = sig;
+    doneToday: data.jobs.filter((j) => j.state === "done" && j.updatedAt && new Date(j.updatedAt).toDateString() === new Date().toDateString()).length };
+  const sig = JSON.stringify([st?.updatedAt, st?.quota, jobsNow, wide(), ovOpen(), data.accounts]); if (sig === overviewSig) return; overviewSig = sig;
   if (!st?.ready) { el.innerHTML = `<div class="empty">building usage stats…</div>`; return; }
   const t = st.days[st.days.length - 1];
   const tile = (label, val, sub = "") => `<div class="tile"><div class="tv">${val}</div><div class="tl">${label}</div>${sub ? `<div class="ts2">${sub}</div>` : ""}</div>`;
@@ -204,13 +221,21 @@ function renderOverview() {
   const quota = !q ? "" : q.bars.length ? (q.ok ? q.bars.map(qBar).join("")
       : `<div class="tile warn"><div class="tv">⚠</div><div class="tl">Quota unavailable</div><div class="ts2">data is ${q.ageHours}h old${q.err ? " (collector error)" : ""}; not showing stale numbers</div></div>`)
     : `<div class="tile warn"><div class="tv">⚠</div><div class="tl">Quota</div><div class="ts2">${esc(q.err || "no data")}</div></div>`;
-  const acctTiles = multiAccount() ? (data.accounts || []).map((a) => a.loggedIn
-    ? tile(`Account${a.isDefault ? " (default)" : ""}`, esc(acctLabel(a.id)), `${esc(a.email || "")}${a.planTier ? " · " + esc(a.planTier) : ""}${a.loginExpiresAt ? " · login until " + esc(a.loginExpiresAt.slice(5, 10)) : ""}`)
-    : `<div class="tile warn"><div class="tv">⚠</div><div class="tl">Account ${esc(a.id)} not logged in</div><div class="ts2">run <code>CLAUDE_CONFIG_DIR=${esc(a.dir)} claude auth login</code></div></div>`).join("") : "";
+  // One tile for all signed-in accounts (one tile each left a lone tile on its own row); a missing login still warns.
+  const accts = data.accounts || [], signedIn = accts.filter((a) => a.loggedIn);
+  const acctTiles = !multiAccount() ? "" : (signedIn.length ? `<div class="tile"><div class="tv">${signedIn.length}</div><div class="tl">Accounts</div>${signedIn.map((a) =>
+      `<div class="ts2" title="${esc(a.email || a.id)}">${esc(acctLabel(a.id))}${a.isDefault ? " (default)" : ""}${a.planTier ? " · " + esc(a.planTier) : ""}${a.loginExpiresAt ? " · until " + esc(a.loginExpiresAt.slice(5, 10)) : ""}</div>`).join("")}</div>` : "") +
+    accts.filter((a) => !a.loggedIn).map((a) => `<div class="tile warn"><div class="tv">⚠</div><div class="tl">Account ${esc(a.id)} not logged in</div><div class="ts2">run <code>CLAUDE_CONFIG_DIR=${esc(a.dir)} claude auth login</code></div></div>`).join("");
+  if (!wide() && !ovOpen()) {
+    const qs = (q?.bars || []).filter((b) => b.state === "ok" && b.w != null).map((b) => `${esc(b.label)} ${b.w}%`).join(" · ");
+    el.innerHTML = `<button class="ov-line" id="ovToggle"><span class="ov-car">▸</span><span>Today · ${fmtTok(t.out)} out · ${t.turns} turns · ${jobsNow.doneToday} done${qs ? " · quota " + qs : ""}</span></button>`;
+    $("#ovToggle").onclick = () => { store.set("ovOpen", "1"); overviewSig = ""; renderOverview(); };
+    return;
+  }
   const models = Object.entries(t.models || {}).sort((a, b) => b[1] - a[1]).map(([m, v]) => `${esc(m)} ${fmtTok(v)}`).join(" · ");
   el.innerHTML = `<h2>Today<span class="count">${esc(t.date)}</span><span class="ov-upd">stats updated ${ago(st.updatedAt) === "now" ? "just now" : `${ago(st.updatedAt)} ago`}</span></h2>
     <div class="tiles">
-      ${tile("running", jobsNow.run)}${tile("needs you", jobsNow.wait)}${tile("done today", jobsNow.doneToday)}
+      ${tile("done today", jobsNow.doneToday)}
       ${tile("active sessions", t.sessions)}${tile("your messages", t.prompts)}${tile("Claude turns", t.turns, `${t.tools} tool calls`)}
       ${tile("output tokens", fmtTok(t.out), models)}${tile("input tokens", fmtTok(t.inp + t.cr), `${fmtTok(t.cr)} from cache`)}
       ${quota}${acctTiles}
@@ -220,6 +245,7 @@ function renderOverview() {
       ${barChart("Active sessions per day (14 days)", st.days, (d) => d.sessions, (d) => `${d.date}<br>${d.sessions} active sessions · ${d.prompts} messages from you`, String)}
     </div>
     ${st.top.length ? `<div class="top-s"><div class="tl">Top sessions by tokens today</div>${st.top.map((x) => `<a href="${x.href}"><span>${esc(x.name)}</span><b>${fmtTok(x.tokens)}</b></a>`).join("")}</div>` : ""}`;
+  if (!wide()) { const b = document.createElement("button"); b.className = "ov-x"; b.textContent = "▴"; b.title = "Collapse"; b.onclick = () => { store.set("ovOpen", "0"); overviewSig = ""; renderOverview(); }; el.querySelector("h2")?.appendChild(b); }
   el.querySelectorAll(".bar").forEach((b) => {
     b.addEventListener("mouseenter", (e) => showTip(b.dataset.tip, e)); b.addEventListener("mousemove", (e) => showTip(b.dataset.tip, e));
     b.addEventListener("mouseleave", hideTip); b.addEventListener("click", (e) => showTip(b.dataset.tip, e));
@@ -249,26 +275,26 @@ function renderDash() {
   const working = data.jobs.filter((j) => jobState(j) === "working");
   const rest = data.jobs.filter((j) => !isBlocked(j) && jobState(j) !== "working");
   const el = $("#dashBody"); const y = $("#dash").scrollTop;
-  const hint = wide() ? `<div class="hint">Open any session to get <b>Chat</b> · <b>Terminal</b> · <b>Split</b> (both side by side) · <b>Changes</b> (this session's diffs).
+  const hint = wide() && store.get("hintHidden") !== "1" ? `<div class="hint"><button class="hx" title="Hide this hint" aria-label="Hide hint">×</button>Open any session to get <b>Chat</b> · <b>Terminal</b> · <b>Split</b> (both side by side) · <b>Changes</b> (this session's diffs).
     <kbd>⌘K</kbd> switch session · <kbd>Alt+1–4</kbd> switch view · <kbd>Alt+N</kbd> new · <kbd>/</kbd> type a message</div>` : "";
-  el.innerHTML = hint + `<div class="cols"><div class="col">` +
-    section("Needs you", blocked, jobCard, { empty: "nothing waiting on you" }) +
-    section("Running", working, jobCard) +
-    `</div><div class="col">` +
-    section("Finished background sessions", rest, jobCard, { limit: 8, key: "done" }) +
+  // What needs you and what is running: left column on wide screens, the very top on phones.
+  const top = section("Needs you", blocked, jobCard, { empty: "nothing waiting on you" }) + section("Running", working, jobCard);
+  const others = section("Finished background sessions", rest, (j) => jobCard(j, { stateChip: true }), { limit: 8, key: "done" }) +
     section("Interactive sessions (resume)", data.transcripts, trCard, { limit: 8, key: "tr" }) +
     section("tmux", data.tmux, tmuxCard, { empty: "no tmux sessions" }) +
-    `<p><button id="shellBtn">Open shell (tmux “quarterdeck”)</button></p></div></div>`;
+    `<p><button id="shellBtn">Open shell (tmux “quarterdeck”)</button></p>`;
+  const dt = $("#dashTop"); dt.hidden = wide(); dt.innerHTML = wide() ? "" : top;
+  el.innerHTML = wide() ? hint + `<div class="cols"><div class="col">${top}</div><div class="col">${others}</div></div>` : others;
   $("#dash").scrollTop = y;
   el.querySelectorAll("[data-more]").forEach((b) => (b.onclick = () => { showAll[b.dataset.more] = true; renderDash(); }));
   $("#shellBtn").onclick = () => (location.hash = "#/shell");
-  el.querySelectorAll("[data-rm]").forEach((b) => (b.onclick = (e) => { e.preventDefault(); e.stopPropagation(); removeJob(b.dataset.rm); }));
+  $("#dash").querySelectorAll("#dashTop [data-rm], #dashBody [data-rm]").forEach((b) => (b.onclick = (e) => { e.preventDefault(); e.stopPropagation(); removeJob(b.dataset.rm); }));
+  el.querySelector(".hint .hx")?.addEventListener("click", () => { store.set("hintHidden", "1"); renderDash(); });
 }
 async function removeJob(id) {
   const j = data.jobs.find((x) => x.id === id); if (!j) return;
   const running = j.state !== "done";
-  const keep = "The transcript is kept: the conversation stays resumable under “Interactive sessions”.";
-  if (!confirm(running ? `“${j.name}” is still running or waiting for you.\nStop it and remove it from the list?\n\n${keep}` : `Remove “${j.name}” from the list?\n\n${keep}`)) return;
+  if (!confirm(`${running ? `"${j.name}" is still running or waiting for you.\nStop it and remove it from the list?` : `Remove "${j.name}" from the list?`}\n(The transcript is kept — resume it later from "Interactive sessions".)`)) return;
   try { await api("/api/rm", { id }); toast("removed"); if (location.hash === `#/job/${id}`) location.hash = ""; await poll(); } catch (e) { toast(e.message, 5000); }
 }
 
@@ -280,19 +306,22 @@ function route() {
 let cur = null;
 window.addEventListener("hashchange", go);
 $("#back").onclick = () => (location.hash = "");
+$("#swBtn").onclick = () => openFind();
+let lastDashView = "list";
 
 function applyLayout() {
   const inSession = route().view !== "list";
-  $("#side").hidden = !wide();
+  $("#side").hidden = !sideOn();
   document.body.classList.toggle("wide", wide());
-  $("#back").hidden = !inSession || wide();
+  $("#back").hidden = !inSession || sideOn();
+  $("#swBtn").hidden = !inSession || sideOn();
 }
 function go() {
   teardown();
   const r = route(); const inSession = r.view !== "list";
   $("#dash").hidden = inSession; $("#session").hidden = !inSession;
   $("#tabs").hidden = !inSession; document.body.classList.toggle("in-session", inSession); applyLayout();
-  if (!inSession) { renderSide(); $("#subtitle").textContent = ""; renderDash(); loadStats().then(renderDash); return; }
+  if (!inSession) { if (r.view !== lastDashView) { $("#dash").scrollTop = 0; lastDashView = r.view; } renderSide(); $("#subtitle").textContent = ""; renderDash(); loadStats().then(renderDash); return; }
   if (r.view === "job") {
     const j = data.jobs.find((x) => x.id === r.id);
     cur = { kind: "job", id: r.id, target: `job:${r.id}`, sessionId: j?.sessionId, title: j?.name || r.id };
@@ -307,7 +336,8 @@ function go() {
   document.querySelectorAll("#tabs .tab").forEach((b) => (b.hidden = !has[b.dataset.tab]));
   cur.has = has;
   refreshMeta(); renderKeys(); renderSide();
-  $("#input").placeholder = cur.kind === "transcript" ? "Message → resumes this session in the background…" : wide() ? "Message…  (Enter send · Shift+Enter newline)" : "Message…  (⌘/Ctrl+Enter to send)";
+  $("#input").placeholder = cur.kind === "transcript" ? "Message → resumes this session in the background…" : wide() ? "Message…  (Enter send · Shift+Enter newline)" : "Message…";
+  syncSend();
   const saved = store.get(`tab:${cur.kind}:${wide() ? "w" : "n"}`);
   setTab(saved && has[saved] && (saved !== "split" || wide()) ? saved : has.chat ? (wide() && has.split && cur.kind === "job" ? "split" : "chat") : "term");
 }
@@ -321,14 +351,22 @@ function refreshMeta() {
   const m = $("#meta");
   if (cur.kind === "job") {
     const j = data.jobs.find((x) => x.id === cur.id);
-    if (!j) { m.innerHTML = `<span>${esc(cur.id)}</span>`; return; }
+    if (!j) { m.innerHTML = `<span>${esc(cur.id)}</span>`; m._sig = ""; return; }
     if (!cur.sessionId && j.sessionId) { cur.sessionId = j.sessionId; go(); return; }
     const st = jobState(j); const nt = isBlocked(j) ? needsText(j.needs) : "";
-    m.innerHTML = `<b class="meta-name">${esc(j.name)}</b><span class="chip ${st}">${esc(st)}</span>${acctBadge(j.profile)}<span class="meta-detail" onclick="this.classList.toggle('open')">${esc(j.detail)}</span><span>${esc(short(j.cwd))}</span><span>${esc(j.id)}</span>
-      <span class="spacer"></span><button id="stopBtn" class="danger">Stop</button><button id="rmBtn" title="Close and remove from the list (transcript is kept)">× Close</button>${nt && nt !== j.detail ? `<div class="needs">⚑ ${esc(nt)}</div>` : ""}`;
+    // One row: name · state · detail · Stop (only while it is doing something) · ⋯ (full detail, folder, id, Close).
+    const canStop = st === "working" || st === "blocked";
+    const html = `<div class="meta-row"><b class="meta-name">${esc(j.name)}</b><span class="chip ${st}">${esc(st)}</span>${acctBadge(j.profile)}<span class="meta-detail">${esc(j.detail)}</span><span class="spacer"></span>
+      ${canStop ? `<button id="stopBtn" class="danger">Stop</button>` : ""}<button id="moreBtn" class="icon" title="Details and actions" aria-expanded="${!!cur.metaOpen}">⋯</button></div>
+      ${nt && nt !== j.detail ? `<div class="needs">⚑ ${esc(nt)}</div>` : ""}
+      <div class="meta-more" ${cur.metaOpen ? "" : "hidden"}><div class="mm-detail">${esc(j.detail || j.intent || "")}</div><div class="mm-row"><span title="${esc(j.cwd)}">${esc(short(j.cwd))}</span><span>${esc(j.id)}</span><span class="spacer"></span><button id="rmBtn" title="Close and remove from the list (transcript is kept)">× Close</button></div></div>`;
+    if (m._sig === html) return; m._sig = html; m.innerHTML = html; // unchanged → keep the DOM (no flicker, no lost taps)
+    const toggle = () => { cur.metaOpen = !cur.metaOpen; m._sig = ""; refreshMeta(); };
+    $("#moreBtn").onclick = toggle; m.querySelector(".meta-detail").onclick = toggle;
     $("#rmBtn").onclick = () => removeJob(j.id);
-    $("#stopBtn").onclick = async () => { if (!confirm(`Stop session ${j.name}? (conversation is kept)`)) return; try { await api("/api/stop", { id: j.id }); toast("stopped"); poll(); } catch (e) { toast(e.message); } };
+    if ($("#stopBtn")) $("#stopBtn").onclick = async () => { if (!confirm(`Stop session "${j.name}"? (The conversation is kept.)`)) return; try { await api("/api/stop", { id: j.id }); toast("stopped"); poll(); } catch (e) { toast(e.message); } };
   } else if (cur.kind === "transcript") {
+    m._sig = "";
     const t = data.transcripts.find((x) => x.sessionId === cur.id);
     m.innerHTML = `<b class="meta-name">${esc(cur.title)}</b><span class="chip">interactive transcript</span><span>${esc(short(t?.cwd))}</span><span class="spacer"></span>${multiAccount() ? `<select id="resumeProfile" title="Account that resumes this conversation">${acctOptions(cur.resumeProfile || "default")}</select>` : ""}<button id="resumeBtn">Resume in background</button>`;
     $("#resumeBtn").onclick = () => resume("");
@@ -348,7 +386,7 @@ function setTab(tab, byUser) {
   const showChat = tab === "chat" || tab === "split", showTerm = tab === "term" || tab === "split";
   $("#panes").classList.toggle("split", tab === "split");
   $("#chat").hidden = !showChat; $("#term").hidden = !showTerm; $("#changes").hidden = tab !== "changes";
-  $("#keys").hidden = !cur.target || tab === "changes" || (wide() && tab === "chat");
+  $("#keys").hidden = !cur.target || tab === "changes" || tab === "chat";
   $("#composer").hidden = tab === "changes";
   if (showChat && !cur.tailWs) openChat();
   if (showChat && cur.target && !cur.promptTimer) { pollPrompt(); cur.promptTimer = setInterval(pollPrompt, 1500); }
@@ -358,25 +396,50 @@ function setTab(tab, byUser) {
 }
 
 // ───────────── chat (rendered transcript, live) ─────────────
-function openChat() {
-  const ev = $("#events"); ev.innerHTML = `<div class="empty">loading…</div>`;
+function openChat(opt = {}) {
+  const ev = $("#events"); if (!opt.keep) ev.innerHTML = `<div class="empty">loading…</div>`;
   cur.toolEls = new Map(); cur.lastTs = 0; cur.subs = new Map(); cur.bgs = new Map(); cur.agentIds = new Map();
-  const ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws/tail?session=${encodeURIComponent(cur.sessionId)}`);
+  cur.tailLimit = cur.tailLimit || 600; cur.newDiv = null;
+  // What arrived since you last read this session (on this device) gets a "new since" divider.
+  if (cur.seenAt === undefined) cur.seenAt = Number(store.get(`seen:${cur.sessionId}`)) || 0;
+  const q = `session=${encodeURIComponent(cur.sessionId)}&limit=${cur.tailLimit}&bytes=${Math.min(40_000_000, cur.tailLimit * 20_000)}`;
+  const ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws/tail?${q}`);
   cur.tailWs = ws; const ctx = cur;
   ws.onmessage = (m) => {
     const d = JSON.parse(m.data); if (d.t !== "events" || ctx !== cur) return;
-    const chat = $("#chat"); const stick = d.initial || chat.scrollHeight - chat.scrollTop - chat.clientHeight < 120;
-    if (d.initial) ev.innerHTML = d.truncated ? `<div class="empty">(older messages omitted)</div>` : "";
+    const chat = $("#chat"); const stick = !d.initial && chat.scrollHeight - chat.scrollTop - chat.clientHeight < 120;
+    if (d.initial) {
+      ev.innerHTML = !d.truncated ? "" : ctx.tailLimit >= 6000 ? `<div class="empty">(older messages omitted)</div>` : `<div class="earlier"><button id="earlierBtn">Load earlier messages</button></div>`;
+      if ($("#earlierBtn")) $("#earlierBtn").onclick = loadEarlier;
+      ctx.initialLoad = true;
+    }
     for (const e of d.evs) addEvent(e);
+    ctx.initialLoad = false;
     renderActivity();
-    if (stick) chat.scrollTop = chat.scrollHeight; else if (d.evs.length) $("#jump").hidden = false;
+    if (d.initial) {
+      const anchor = opt.anchor && ev.querySelector(`[data-id="${CSS.escape(opt.anchor)}"]`);
+      const to = (el) => { chat.scrollTop += el.getBoundingClientRect().top - chat.getBoundingClientRect().top - 8; };
+      if (anchor) to(anchor);
+      else if (ctx.newDiv?.nextElementSibling) { to(ctx.newDiv); $("#jump").hidden = chat.scrollHeight - chat.scrollTop - chat.clientHeight < 60; }
+      else { chat.scrollTop = chat.scrollHeight; markSeen(); }
+    } else if (stick) { chat.scrollTop = chat.scrollHeight; markSeen(); }
+    else if (d.evs.length) $("#jump").hidden = false;
     if (!d.initial && d.evs.some((e) => e.k === "tool" && /Edit|Write/.test(e.name)) && cur.tab === "changes") loadChanges();
   };
   ws.onopen = () => renderActivity();
   ws.onclose = () => { if (ctx === cur && !ctx.closing) { ctx.tailWs = null; renderActivity(); setTimeout(() => ctx === cur && !ctx.tailWs && openChat(), 2000); } };
 }
-$("#chat").addEventListener("scroll", () => { const c = $("#chat"); if (c.scrollHeight - c.scrollTop - c.clientHeight < 60) $("#jump").hidden = true; });
-$("#jump").onclick = () => { const c = $("#chat"); c.scrollTop = c.scrollHeight; $("#jump").hidden = true; };
+function loadEarlier() {
+  if (!cur?.tailWs) return;
+  const first = $("#events").querySelector(".ev[data-id]");
+  const btn = $("#earlierBtn"); if (btn) { btn.disabled = true; btn.textContent = "loading…"; }
+  cur.tailLimit = Math.min(6000, cur.tailLimit * 4);
+  const ws = cur.tailWs; ws.onclose = null; ws.close(); cur.tailWs = null;
+  openChat({ anchor: first?.dataset.id, keep: true });
+}
+function markSeen() { if (cur?.sessionId && cur.lastTs) store.set(`seen:${cur.sessionId}`, String(cur.lastTs)); }
+$("#chat").addEventListener("scroll", () => { const c = $("#chat"); if (c.scrollHeight - c.scrollTop - c.clientHeight < 60) { $("#jump").hidden = true; markSeen(); } });
+$("#jump").onclick = () => { const c = $("#chat"); c.scrollTop = c.scrollHeight; $("#jump").hidden = true; markSeen(); };
 
 // ───────────── activity indicator (Chat view) ─────────────
 // Shows that a message went out and the session is alive: an optimistic "sending" bubble, then a
@@ -442,12 +505,12 @@ async function pollSub(toolId, force) {
     if (d.status === "done" && !sub.async) sub.done = true;
     const evs = d.events || []; const lastTool = [...evs].reverse().find((x) => x.k === "tool");
     const st = sub.det.querySelector(".st");
-    st.textContent = sub.done ? `✓ ${d.steps} steps` : `running · ${d.steps} steps${lastTool ? " · " + lastTool.name : ""}`;
+    st.textContent = sub.done ? `✓ ${d.steps} steps` : `running · ${d.steps} steps${lastTool ? " · " + toolName(lastTool.name) : ""}`;
     st.className = `st ${sub.done ? "" : "pending"}`;
     if (sub.det.open) {
       sub.feed.innerHTML = `<div class="subhead">sub-agent${d.agentType ? " · " + esc(d.agentType) : ""}${d.model ? " · " + esc(d.model) : ""}${d.background ? " · background" : ""}</div>` +
         evs.filter((x) => x.k === "tool" || x.k === "assistant").slice(-30).map((x) => x.k === "tool"
-          ? `<div class="subrow"><span class="tn">${esc(x.name)}</span> <span class="ts">${esc(x.summary)}</span></div>`
+          ? `<div class="subrow"><span class="tn">${esc(toolName(x.name))}</span> ${sumHtml(x.summary)}</div>`
           : `<div class="subrow say">${esc(String(x.text).slice(0, 300))}</div>`).join("");
     }
   } catch {} finally { sub.busy = false; }
@@ -500,12 +563,18 @@ function addEvent(e) {
     const norm = (x) => String(x || "").replace(/\s+/g, " ").trim();
     for (const p of ev.querySelectorAll(".ev.user.pending")) if (p.dataset.text === norm(e.text)) { p.remove(); break; }
   }
-  const div = document.createElement("div"); div.className = `ev ${e.k}`;
+  if (cur.initialLoad && !cur.newDiv && cur.seenAt && t > cur.seenAt && ev.querySelector(".ev")) {
+    const at = new Date(cur.seenAt), today = at.toDateString() === new Date().toDateString();
+    const nd = document.createElement("div"); nd.className = "new-div";
+    nd.textContent = `new since ${today ? at.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : at.toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}`;
+    ev.appendChild(nd); cur.newDiv = nd;
+  }
+  const div = document.createElement("div"); div.className = `ev ${e.k}`; if (e.id) div.dataset.id = e.id;
   if (e.k === "user" || e.k === "system") div.textContent = e.text;
   else if (e.k === "assistant") div.innerHTML = md(e.text);
   else if (e.k === "tool") {
     const det = document.createElement("details"); det.className = "tool";
-    det.innerHTML = `<summary><span class="tn">${esc(e.name)}</span><span class="ts">${esc(e.summary)}</span><span class="st pending">…</span></summary>`;
+    det.innerHTML = `<summary><span class="tn" title="${esc(e.name)}">${esc(toolName(e.name))}</span>${sumHtml(e.summary)}<span class="st pending">…</span></summary>`;
     const pre = document.createElement("pre"); pre.textContent = e.input; det.appendChild(pre);
     cur.toolEls.set(e.toolId, det); div.appendChild(det);
     if (e.name === "Agent" || e.name === "Task") {
@@ -528,10 +597,14 @@ async function loadChanges() {
   const totA = d.files.reduce((s, f) => s + f.add, 0), totD = d.files.reduce((s, f) => s + f.del, 0);
   el.innerHTML = `<div class="chg-head"><span>${d.files.length} file(s) edited by this session</span><span class="add">+${totA}</span><span class="del">−${totD}</span><span class="spacer"></span><span>diff vs HEAD, current disk state</span><button id="chgRefresh">⟳</button></div>` +
     (d.files.length ? "" : `<div class="empty">This session hasn't edited any files.</div>`) +
-    d.files.map((f) => `<details class="file" data-p="${esc(f.path)}" ${open.has(f.path) ? "open" : ""}><summary>
-      <span class="stat ${esc(f.status)}">${esc(f.status)}</span><span class="p" title="${esc(f.path)}">${esc(f.rel)}</span>
+    (() => {
+      const fileHtml = (f) => `<details class="file" data-p="${esc(f.path)}" ${open.has(f.path) ? "open" : ""}><summary>
+      <span class="stat ${esc(f.status)}">${esc(f.status)}</span><span class="p" title="${esc(f.path)}">${pathHtml(f.rel)}</span>
       ${f.repo ? `<span class="stat">${esc(f.repo)}</span>` : ""}<span class="add">+${f.add}</span><span class="del">−${f.del}</span><span class="stat">${ago(f.last)}</span></summary>
-      ${f.diff ? diffHtml(f.diff) : `<div class="empty" style="padding:4px 10px 8px">${f.status === "clean" ? "no uncommitted changes (already committed or reverted)" : "no diff available"}</div>`}</details>`).join("");
+      ${f.diff ? diffHtml(f.diff) : `<div class="empty" style="padding:4px 10px 8px">${f.status === "clean" ? "no uncommitted changes (already committed or reverted)" : "no diff available"}</div>`}</details>`;
+      const chg = d.files.filter((f) => f.status !== "clean"), same = d.files.filter((f) => f.status === "clean");
+      return chg.map(fileHtml).join("") + (same.length ? `<details class="unchanged" ${el.querySelector("details.unchanged[open]") ? "open" : ""}><summary>${same.length} unchanged (already committed or reverted)</summary>${same.map(fileHtml).join("")}</details>` : "");
+    })();
   $("#chgRefresh").onclick = loadChanges;
 }
 function diffHtml(diff) {
@@ -605,6 +678,8 @@ function renderKeys() {
 
 // ───────────── composer ─────────────
 const input = $("#input");
+const syncSend = () => { $("#send").disabled = !input.value.trim(); };
+input.addEventListener("input", syncSend);
 input.addEventListener("input", () => { input.style.height = "auto"; input.style.height = Math.min(input.scrollHeight, innerHeight * 0.4) + "px"; });
 input.addEventListener("keydown", (e) => {
   if (e.isComposing || e.keyCode === 229) return; // IME candidate selection
@@ -612,16 +687,16 @@ input.addEventListener("keydown", (e) => {
 });
 $("#composer").onsubmit = async (e) => {
   e.preventDefault();
-  const text = input.value; if (!text.trim() && cur.kind === "transcript") return;
+  const text = input.value; if (!text.trim()) return; // empty Send must not press Enter in the session — ⏎ on the key bar does that
   const btn = $("#send"); btn.disabled = true;
   try {
     if (cur.kind === "transcript") await resume(text);
     else if (cur.ptyWs?.readyState === 1) { sendPty({ t: "in", d: `\x1b[200~${text}\x1b[201~` }); setTimeout(() => sendPty({ t: "in", d: "\r" }), 150); }
     else await api("/api/send", { target: cur.target, text });
-    input.value = ""; input.style.height = "auto";
+    input.value = ""; input.style.height = "auto"; syncSend();
     if (cur.kind === "job" && !$("#chat").hidden && text.trim()) { addPending(text); cur.workSince = cur.awaitingSince = Date.now(); renderActivity(); }
     else toast("sent");
-  } catch (err) { toast(err.message); } finally { btn.disabled = false; }
+  } catch (err) { toast(err.message); } finally { syncSend(); }
 };
 async function resume(prompt) {
   if (!confirm("Resume this conversation as a background session? (If it is still open in a terminal, Claude starts a copy.)")) return;

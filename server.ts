@@ -368,9 +368,9 @@ function parseLine(line: string, allowSidechain = false): Ev[] {
 
 // Incremental reader per websocket: tracks byte offset, emits complete lines only.
 class Tail {
-  off = 0; rem = ""; skipPartial = false;
+  off = 0; rem = ""; skipPartial = false; startedMidFile = false;
   constructor(public path: string, maxInitial = 4_000_000) {
-    try { const size = statSync(path).size; if (size > maxInitial) { this.off = size - maxInitial; this.skipPartial = true; } } catch {}
+    try { const size = statSync(path).size; if (size > maxInitial) { this.off = size - maxInitial; this.skipPartial = true; this.startedMidFile = true; } } catch {}
   }
   readNew(): Ev[] {
     let size = 0; try { size = statSync(this.path).size; } catch { return []; }
@@ -391,7 +391,7 @@ class Tail {
 // One PTY per target, shared by all viewers (tmux-like). Output kept in a ring buffer
 // so a reconnecting / second device gets the screen back (mosh-like).
 type WsAuth = { who: string; peer?: string }; // peer = tailnet address to re-check (absent for plain local)
-type WsData = ({ kind: "pty"; key: string } | { kind: "tail"; tail: Tail; timer?: Timer }) & WsAuth;
+type WsData = ({ kind: "pty"; key: string } | { kind: "tail"; tail: Tail; limit: number; timer?: Timer }) & WsAuth;
 const openSockets = new Set<ServerWebSocket<WsData>>();
 const RING = 400_000;
 class Pty {
@@ -736,7 +736,10 @@ async function handle(req: Request, server: any): Promise<Response | undefined> 
     } else {
       const file = findSessionFile(url.searchParams.get("session") || "");
       if (!file) return new Response("no session", { status: 404 });
-      if (server.upgrade(req, { data: { kind: "tail", tail: new Tail(file), who: auth.who, peer: authPeer(req, ip) } })) return;
+      // "Load earlier" re-opens the tail with a larger event limit and byte window (both capped).
+      const num = (k: string, def: number, lo: number, hi: number) => { const v = Number(url.searchParams.get(k)); return Number.isFinite(v) && v > 0 ? Math.max(lo, Math.min(hi, Math.floor(v))) : def; };
+      const limit = num("limit", 600, 100, 6000), bytes = num("bytes", 4_000_000, 1_000_000, 40_000_000);
+      if (server.upgrade(req, { data: { kind: "tail", tail: new Tail(file, bytes), limit, who: auth.who, peer: authPeer(req, ip) } })) return;
     }
     return new Response("upgrade failed", { status: 400 });
   }
@@ -855,7 +858,7 @@ const websocket = {
       setTimeout(() => p.nudge(), 120);
     } else {
       const evs = d.tail.readNew();
-      ws.send(JSON.stringify({ t: "events", evs: evs.slice(-600), truncated: evs.length > 600, initial: true }));
+      ws.send(JSON.stringify({ t: "events", evs: evs.slice(-d.limit), truncated: evs.length > d.limit || d.tail.startedMidFile, initial: true }));
       d.timer = setInterval(() => {
         const n = d.tail.readNew(); if (n.length) ws.send(JSON.stringify({ t: "events", evs: n }));
       }, 700);
