@@ -578,10 +578,20 @@ function renderPrompt(m) {
   if (sig === cur.promptSig) return; cur.promptSig = sig;
   if (!m) { el.hidden = true; el.innerHTML = ""; return; }
   el.hidden = false;
-  el.innerHTML = `<div class="pc-head"><span class="chip blocked">waiting for your choice</span>${m.tabs ? `<span class="pc-tabs">${esc(m.tabs)}</span>` : ""}</div>
+  // Tab bar ("← ☒ Color ☐ Toppings ✔ Submit →") → readable steps: answered ones get a check mark.
+  const steps = m.tabs ? m.tabs.replace(/[←→]/g, "").trim().split(/\s{2,}/).filter(Boolean).map((t) => {
+    const done = /^[☒☑]/.test(t), label = t.replace(/^[☐☑☒✔✓]\s*/, "");
+    return `<span class="pc-step ${done ? "done" : ""}">${done ? "✓ " : ""}${esc(label)}</span>`;
+  }).join('<span class="pc-sep">›</span>') : "";
+  const review = m.options.some((o) => /^Submit answers/i.test(o.label));
+  const hint = review ? "Check the answers, then tap “Submit answers”" : m.multiSelect ? "Tick as many as you like, then tap Next ›" : m.hasTabs ? "Pick one — it moves to the next question" : "";
+  // Back/Next sit in the header so they stay visible on a phone without scrolling the card.
+  const nav = m.hasTabs || m.multiSelect ? `<span class="pc-nav"><button data-k="back">‹ Back</button>${review ? "" : `<button data-k="next" class="primary">Next ›</button>`}</span>` : "";
+  el.innerHTML = `<div class="pc-head"><span class="chip blocked">waiting for your choice</span>${steps ? `<span class="pc-tabs">${steps}</span>` : ""}${nav}</div>
     ${m.title ? `<div class="pc-title">${esc(m.title)}</div>` : ""}
-    <div class="pc-opts">${m.options.map((o) => `<button class="pc-opt ${o.selected ? "sel" : ""}" data-n="${o.n}"><b>${o.n}.</b> ${esc(o.label)}${o.desc ? `<small>${esc(o.desc)}</small>` : ""}</button>`).join("")}</div>
-    <div class="pc-foot"><button data-k="up">↑</button><button data-k="down">↓</button><button data-k="enter">⏎ Enter</button><button data-k="esc">Esc</button><span>${esc(m.footer)}</span></div>`;
+    ${hint ? `<div class="pc-hint">${esc(hint)}</div>` : ""}
+    <div class="pc-opts">${m.options.map((o) => `<button class="pc-opt ${o.selected ? "sel" : ""} ${o.checked !== null ? "cb" : ""} ${o.checked ? "on" : ""}" data-n="${o.n}">${o.checked !== null ? `<span class="box">${o.checked ? "☑" : "☐"}</span>` : `<b>${o.n}.</b>`} ${esc(o.label)}${o.desc ? `<small>${esc(o.desc)}</small>` : ""}</button>`).join("")}</div>
+    <div class="pc-foot"><button data-k="up">↑</button><button data-k="down">↓</button><button data-k="enter">⏎ Enter</button><button data-k="esc">Esc</button></div>`;
   const send = async (data) => {
     try {
       if (cur.ptyWs?.readyState === 1) sendPty({ t: "in", d: data }); else await api("/api/keys", { target: cur.target, data });
@@ -589,7 +599,8 @@ function renderPrompt(m) {
     } catch (e) { toast(e.message); }
   };
   el.querySelectorAll(".pc-opt").forEach((b) => (b.onclick = () => { b.classList.add("sending"); send(b.dataset.n); }));
-  const K = { up: "\x1b[A", down: "\x1b[B", enter: "\r", esc: "\x1b" };
+  // Next/Back = Tab / Shift-Tab: moves between questions and to the "Review your answers" page.
+  const K = { up: "\x1b[A", down: "\x1b[B", enter: "\r", esc: "\x1b", next: "\t", back: "\x1b[Z" };
   el.querySelectorAll("[data-k]").forEach((b) => (b.onclick = () => send(K[b.dataset.k])));
 }
 

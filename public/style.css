@@ -253,3 +253,17 @@ header#top { min-width: 0; }
 
 /* account badge */
 .chip.acct { background: #2a2440; color: #b9a8ff; }
+
+/* menu card: steps, multi-select checkboxes, Next/Back */
+.pc-tabs { display: inline-flex; flex-wrap: wrap; gap: 4px; align-items: center; font-size: 12px; color: var(--dim); }
+.pc-step.done { color: var(--ok); }
+.pc-sep { opacity: .5; }
+.pc-hint { color: var(--accent2); font-size: 12px; margin: -2px 0 8px; }
+.pc-opt.cb { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; }
+.pc-opt.cb .box { font-size: 16px; line-height: 1; }
+.pc-opt.cb small { flex-basis: 100%; }
+.pc-opt.on { border-color: var(--ok); }
+.pc-foot button.primary { font-weight: 600; }
+.pc-head { flex-wrap: wrap; }
+.pc-nav { margin-left: auto; display: inline-flex; gap: 6px; }
+.pc-nav button { font-size: 13px; padding: 4px 12px; }
