@@ -9,5 +9,8 @@
   "claude": "/Users/you/.local/bin/claude",
   "tailscale": "/Applications/Tailscale.app/Contents/MacOS/Tailscale",
   "quotaUrl": null,
-  "telegram": null
+  "telegram": null,
+  "nodeId": "studio",
+  "nodeLabel": "Studio",
+  "nodes": []
 }

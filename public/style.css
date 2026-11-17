@@ -325,3 +325,11 @@ details.unchanged > summary { color: var(--dim); font-size: 13px; cursor: pointe
   body.in-session #home, body.in-session #newBtn { display: inline-block; }
   body.in-session #findBtn { display: inline-block; }
 }
+
+/* fleet: several machines */
+.chip.host { background: #1b2a3c; color: #8fb8e8; }
+.chip.host.off { background: #2a2414; color: var(--warn); }
+.card .l2.lm .chip.host { margin-right: 6px; }
+.si .hn { flex: none; font-size: 10px; color: #8fb8e8; border: 1px solid #2c3b5a; border-radius: 5px; padding: 0 4px; }
+.hint.warn { background: #241f12; border-color: #5a4a22; margin-bottom: 8px; }
+.hint.warn small { color: var(--dim); }

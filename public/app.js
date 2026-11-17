@@ -60,16 +60,17 @@ const sumHtml = (x) => `<span class="ts">${/^[~/][^\s]*$/.test(short(x)) ? pathH
 const needsText = (n) => (n == null ? "" : typeof n === "string" ? n : n.text || n.question || JSON.stringify(n));
 const outText = (o) => (o == null ? "" : typeof o === "string" ? o : o.result || o.text || o.headline || JSON.stringify(o));
 // ───────────── accounts ─────────────
-const multiAccount = () => (data.accounts || []).length > 1;
-const acctOf = (id) => (data.accounts || []).find((a) => a.id === (id || "default"));
-const acctLabel = (id) => {
-  const a = acctOf(id); const local = a?.email ? a.email.split("@")[0] : "";
-  const clash = local && (data.accounts || []).some((b) => b.id !== a.id && (b.email || "").split("@")[0] === local);
+const accountsOf = (node) => (node ? nodeOf(node)?.data?.accounts : data.accounts) || [];
+const multiAccount = (node = "") => accountsOf(node).length > 1;
+const acctOf = (id, node = "") => accountsOf(node).find((a) => a.id === (id || "default"));
+const acctLabel = (id, node = "") => {
+  const a = acctOf(id, node); const local = a?.email ? a.email.split("@")[0] : "";
+  const clash = local && accountsOf(node).some((b) => b.id !== a.id && (b.email || "").split("@")[0] === local);
   return local && !clash ? local : (id || "default");
 };
-const acctBadge = (id) => (multiAccount() ? `<span class="chip acct" title="${esc(acctOf(id)?.email || id)}">${esc(acctLabel(id))}</span>` : "");
-function acctOptions(selected) {
-  return (data.accounts || []).map((a) => `<option value="${esc(a.id)}" ${a.id === selected ? "selected" : ""} ${a.loggedIn ? "" : "disabled"}>${esc(a.email || a.id)}${a.isDefault ? " (default)" : ""}${a.loggedIn ? "" : " — not logged in"}</option>`).join("");
+const acctBadge = (id, node = "") => (multiAccount(node) ? `<span class="chip acct" title="${esc(acctOf(id, node)?.email || id)}">${esc(acctLabel(id, node))}</span>` : "");
+function acctOptions(selected, node = "") {
+  return accountsOf(node).map((a) => `<option value="${esc(a.id)}" ${a.id === selected ? "selected" : ""} ${a.loggedIn ? "" : "disabled"}>${esc(a.email || a.id)}${a.isDefault ? " (default)" : ""}${a.loggedIn ? "" : " — not logged in"}</option>`).join("");
 }
 const isBlocked = (j) => j.tempo === "blocked" || j.state === "blocked" || (j.needs && j.state !== "done");
 // A resumed/attached session keeps state "done" while it generates; only tempo turns "active".
@@ -79,30 +80,55 @@ const jobState = (j) => (j.phase === "working" ? "working" : j.phase === "waitin
 
 // ───────────── state + polling + notifications ─────────────
 let data = { jobs: [], transcripts: [], tmux: [], cwds: [], ptys: [] };
+// ───────────── fleet: several machines in one page (hub forwards /n/<machine>/… to the others) ─────────────
+let fleet = { self: null, nodes: [] };
+const multiHost = () => (fleet.nodes || []).length > 0;
+const nb = (node) => (node ? `/n/${encodeURIComponent(node)}` : ""); // URL prefix for a machine's API / WebSockets
+const nodeOf = (node) => (fleet.nodes || []).find((n) => n.id === node);
+const hostLabel = (node) => (node ? nodeOf(node)?.label || node : fleet.self?.label || "this machine");
+const hostChip = (node) => (multiHost() ? `<span class="chip host${node && !nodeOf(node)?.online ? " off" : ""}" title="${node && !nodeOf(node)?.online ? "offline" : "machine"}">${esc(hostLabel(node))}</span>` : "");
+const hrefOf = (view, id, node) => `#/${view}/${view === "tmux" ? encodeURIComponent(id) : id}${node ? "/" + node : ""}`;
+const findJob = (id, node) => data.jobs.find((x) => x.id === id && (x.node || "") === (node || ""));
+function mergeFleet(loc, fl) {
+  fleet = fl || { self: null, nodes: [] };
+  const tag = (arr, node, offline) => (arr || []).map((x) => ({ ...x, node, offline }));
+  const out = { ...loc, jobs: tag(loc.jobs, "", false), transcripts: tag(loc.transcripts, "", false), tmux: tag(loc.tmux, "", false) };
+  for (const n of fleet.nodes) if (n.data) {
+    out.jobs.push(...tag(n.data.jobs, n.id, !n.online)); out.transcripts.push(...tag(n.data.transcripts, n.id, !n.online)); out.tmux.push(...tag(n.data.tmux, n.id, !n.online));
+  }
+  if (fleet.nodes.length) {
+    const t = (x) => (typeof x === "number" ? x : Date.parse(x) || 0);
+    out.jobs.sort((a, b) => t(b.updatedAt) - t(a.updatedAt)); out.transcripts.sort((a, b) => t(b.mtime) - t(a.mtime));
+  }
+  return out;
+}
 let prevJobState = null;
 const showAll = { done: false, tr: false };
 
 async function poll() {
   try {
-    data = await api("/api/sessions");
+    const [loc, fl] = await Promise.all([api("/api/sessions"), api("/api/fleet").catch(() => null)]);
+    data = mergeFleet(loc, fl);
     notifyTransitions();
     const v = route().view;
     if (v === "list") { await loadStats(); renderDash(); } else refreshMeta();
     renderSide();
     const blocked = data.jobs.filter(isBlocked).length;
     document.title = blocked ? `(${blocked}) Quarterdeck` : "Quarterdeck";
+    const off = (fleet.nodes || []).filter((n) => !n.online).length; $("#home").title = off ? `${off} machine(s) offline` : "";
     const sw = $("#swBtn"); sw.textContent = blocked ? `⚑ ${blocked}` : "☰"; sw.classList.toggle("warn", !!blocked);
   } catch (e) { console.warn(e); }
 }
 function notifyTransitions() {
-  const now = new Map(data.jobs.map((j) => [j.id, jobState(j)]));
+  const now = new Map(data.jobs.map((j) => [`${j.node}:${j.id}`, jobState(j)]));
   if (prevJobState) for (const [id, st] of now) {
     const was = prevJobState.get(id);
     if (was && was !== st && (st === "blocked" || st === "done")) {
-      const j = data.jobs.find((x) => x.id === id);
+      const j = data.jobs.find((x) => `${x.node}:${x.id}` === id);
       const msg = st === "blocked" ? `needs you: ${needsText(j.needs) || j.detail}` : `done: ${outText(j.output) || j.detail}`;
       // System notifications now come from the server (Web Push), so only an in-page toast here.
-      if (location.hash !== `#/job/${id}`) toast(`${j.name} — ${msg}`, 8000, { href: `#/job/${id}`, kind: st }); // already looking at it → no toast
+      const h = hrefOf("job", j.id, j.node);
+      if (location.hash !== h) toast(`${multiHost() ? `[${hostLabel(j.node)}] ` : ""}${j.name} — ${msg}`, 8000, { href: h, kind: st }); // already looking at it → no toast
       navigator.vibrate?.(120);
     }
   }
@@ -143,14 +169,15 @@ function allItems() {
   const order = { blocked: 0, working: 1 };
   const jobs = [...data.jobs].sort((a, b) => (order[jobState(a)] ?? 2) - (order[jobState(b)] ?? 2));
   return [
-    ...jobs.map((j) => ({ href: `#/job/${j.id}`, group: jobState(j) === "blocked" ? "Needs you" : jobState(j) === "working" ? "Running" : "Finished", cls: jobState(j), name: j.name, sub: isBlocked(j) ? needsText(j.needs) || j.detail : j.detail, age: j.updatedAt, key: `${j.name} ${j.id} ${j.detail} ${j.cwd}` })),
-    ...data.transcripts.map((t) => ({ href: `#/t/${t.sessionId}`, group: "Interactive", cls: "", name: t.title, sub: t.lastPrompt, age: t.mtime, key: `${t.title} ${t.lastPrompt} ${t.cwd}` })),
-    ...data.tmux.map((s) => ({ href: `#/tmux/${encodeURIComponent(s.name)}`, group: "tmux", cls: "", name: `tmux: ${s.name}`, sub: `${s.command} · ${short(s.path)}`, age: s.activity, key: `tmux ${s.name} ${s.path}` })),
+    ...jobs.map((j) => ({ href: hrefOf("job", j.id, j.node), node: j.node, group: jobState(j) === "blocked" ? "Needs you" : jobState(j) === "working" ? "Running" : "Finished", cls: jobState(j), name: j.name, sub: isBlocked(j) ? needsText(j.needs) || j.detail : j.detail, age: j.updatedAt, key: `${j.name} ${j.id} ${j.detail} ${j.cwd} ${hostLabel(j.node)}` })),
+    ...data.transcripts.map((t) => ({ href: hrefOf("t", t.sessionId, t.node), node: t.node, group: "Interactive", cls: "", name: t.title, sub: t.lastPrompt, age: t.mtime, key: `${t.title} ${t.lastPrompt} ${t.cwd} ${hostLabel(t.node)}` })),
+    ...data.tmux.map((s) => ({ href: hrefOf("tmux", s.name, s.node), node: s.node, group: "tmux", cls: "", name: `tmux: ${s.name}`, sub: `${s.command} · ${short(s.path)}`, age: s.activity, key: `tmux ${s.name} ${s.path}` })),
     { href: "#/shell", group: "tmux", cls: "", name: "shell (tmux quarterdeck)", sub: "persistent shell", age: "", key: "shell Quarterdeck" },
+    ...(fleet.nodes || []).filter((n) => n.online).map((n) => ({ href: `#/shell/main/${n.id}`, node: n.id, group: "tmux", cls: "", name: `shell on ${n.label}`, sub: "persistent shell (tmux)", age: "", key: `shell ${n.label}` })),
   ];
 }
 function itemHtml(it, extra = "") {
-  return `<a class="si ${it.cls} ${extra}" href="${it.href}"><div class="n"><b>${esc(it.name)}</b><i>${ago(it.age)}</i></div><div class="d">${esc(it.sub)}</div></a>`;
+  return `<a class="si ${it.cls} ${extra}" href="${it.href}"><div class="n"><b>${esc(it.name)}</b>${multiHost() && it.node !== undefined ? `<span class="hn">${esc(hostLabel(it.node))}</span>` : ""}<i>${ago(it.age)}</i></div><div class="d">${esc(it.sub)}</div></a>`;
 }
 function match(it, q) { return !q || q.toLowerCase().split(/\s+/).every((w) => it.key.toLowerCase().includes(w) || it.name.toLowerCase().includes(w)); }
 
@@ -177,12 +204,12 @@ function jobCard(j, opt = {}) {
   const detail = dup ? "" : `<div class="l2">${esc(j.detail || j.intent)}</div>`;
   // The section heading already says the state; only an unusual one (failed, stopped…) gets a chip.
   const chip = opt.stateChip && st !== "done" ? `<span class="chip ${st}">${esc(st)}</span>` : "";
-  return `<a class="card ${st}" href="#/job/${j.id}">
-    <div class="l1"><span class="name">${esc(j.name)}</span><span class="age">${ago(j.updatedAt)}</span><button class="x" data-rm="${j.id}" title="Close and remove from the list (transcript is kept)" aria-label="Close session">×</button></div>
-    ${detail}${needs}${res}<div class="l2 lm">${acctBadge(j.profile)}${chip}${esc(short(j.cwd))} · ${esc(j.id)}</div></a>`;
+  return `<a class="card ${st}" href="${hrefOf("job", j.id, j.node)}">
+    <div class="l1"><span class="name">${esc(j.name)}</span><span class="age">${ago(j.updatedAt)}</span><button class="x" data-rm="${j.id}" data-node="${esc(j.node || "")}" title="Close and remove from the list (transcript is kept)" aria-label="Close session">×</button></div>
+    ${detail}${needs}${res}<div class="l2 lm">${hostChip(j.node)}${acctBadge(j.profile, j.node)}${chip}${esc(short(j.cwd))} · ${esc(j.id)}</div></a>`;
 }
-const trCard = (t) => `<a class="card" href="#/t/${t.sessionId}"><div class="l1"><span class="name">${esc(t.title)}</span><span class="age">${ago(t.mtime)}</span></div><div class="l2">${esc(t.lastPrompt)}</div><div class="l2">${esc(short(t.cwd))}</div></a>`;
-const tmuxCard = (s) => `<a class="card" href="#/tmux/${encodeURIComponent(s.name)}"><div class="l1"><span class="name">tmux: ${esc(s.name)}</span>${s.attached ? `<span class="chip live">${s.attached} attached</span>` : ""}<span class="age">${ago(s.activity)}</span></div><div class="l2">${esc(s.command)} · ${esc(short(s.path))} · ${s.windows} win</div></a>`;
+const trCard = (t) => `<a class="card" href="${hrefOf("t", t.sessionId, t.node)}"><div class="l1"><span class="name">${esc(t.title)}</span><span class="age">${ago(t.mtime)}</span></div><div class="l2">${esc(t.lastPrompt)}</div><div class="l2 lm">${hostChip(t.node)}${esc(short(t.cwd))}</div></a>`;
+const tmuxCard = (s) => `<a class="card" href="${hrefOf("tmux", s.name, s.node)}"><div class="l1"><span class="name">tmux: ${esc(s.name)}</span>${s.attached ? `<span class="chip live">${s.attached} attached</span>` : ""}<span class="age">${ago(s.activity)}</span></div><div class="l2 lm">${hostChip(s.node)}${esc(s.command)} · ${esc(short(s.path))} · ${s.windows} win</div></a>`;
 function section(title, items, render, opt = {}) {
   let list = items, more = "";
   if (opt.limit && !showAll[opt.key] && items.length > opt.limit) { list = items.slice(0, opt.limit); more = `<button class="more" data-more="${opt.key}">show ${items.length - opt.limit} more</button>`; }
@@ -283,25 +310,26 @@ function renderDash() {
     section("Interactive sessions (resume)", data.transcripts, trCard, { limit: 8, key: "tr" }) +
     section("tmux", data.tmux, tmuxCard, { empty: "no tmux sessions" }) +
     `<p><button id="shellBtn">Open shell (tmux “quarterdeck”)</button></p>`;
-  const dt = $("#dashTop"); dt.hidden = wide(); dt.innerHTML = wide() ? "" : top;
-  el.innerHTML = wide() ? hint + `<div class="cols"><div class="col">${top}</div><div class="col">${others}</div></div>` : others;
+  const off = (fleet.nodes || []).filter((n) => !n.online).map((n) => `<div class="hint warn">⚠ <b>${esc(n.label)}</b> is offline${n.lastOk ? ` (last seen ${ago(n.lastOk)} ago)` : ""}: its sessions are shown as they were, and actions on them wait until it is back.${n.error ? `<br><small>${esc(n.error)}</small>` : ""}</div>`).join("");
+  const dt = $("#dashTop"); dt.hidden = wide(); dt.innerHTML = wide() ? "" : off + top;
+  el.innerHTML = wide() ? off + hint + `<div class="cols"><div class="col">${top}</div><div class="col">${others}</div></div>` : others;
   $("#dash").scrollTop = y;
   el.querySelectorAll("[data-more]").forEach((b) => (b.onclick = () => { showAll[b.dataset.more] = true; renderDash(); }));
   $("#shellBtn").onclick = () => (location.hash = "#/shell");
-  $("#dash").querySelectorAll("#dashTop [data-rm], #dashBody [data-rm]").forEach((b) => (b.onclick = (e) => { e.preventDefault(); e.stopPropagation(); removeJob(b.dataset.rm); }));
+  $("#dash").querySelectorAll("#dashTop [data-rm], #dashBody [data-rm]").forEach((b) => (b.onclick = (e) => { e.preventDefault(); e.stopPropagation(); removeJob(b.dataset.rm, b.dataset.node || ""); }));
   el.querySelector(".hint .hx")?.addEventListener("click", () => { store.set("hintHidden", "1"); renderDash(); });
 }
-async function removeJob(id) {
-  const j = data.jobs.find((x) => x.id === id); if (!j) return;
+async function removeJob(id, node = "") {
+  const j = findJob(id, node); if (!j) return;
   const running = j.state !== "done";
   if (!confirm(`${running ? `"${j.name}" is still running or waiting for you.\nStop it and remove it from the list?` : `Remove "${j.name}" from the list?`}\n(The transcript is kept — resume it later from "Interactive sessions".)`)) return;
-  try { await api("/api/rm", { id }); toast("removed"); if (location.hash === `#/job/${id}`) location.hash = ""; await poll(); } catch (e) { toast(e.message, 5000); }
+  try { await api(nb(node) + "/api/rm", { id }); toast("removed"); if (location.hash === hrefOf("job", id, node)) location.hash = ""; await poll(); } catch (e) { toast(e.message, 5000); }
 }
 
 // ───────────── routing ─────────────
 function route() {
-  const [, view, id] = location.hash.split("/");
-  return view ? { view, id: id && decodeURIComponent(id) } : { view: "list" };
+  const [, view, id, node] = location.hash.split("/"); // #/<view>/<id>[/<machine>]
+  return view ? { view, id: id && decodeURIComponent(id), node: node ? decodeURIComponent(node) : "" } : { view: "list", node: "" };
 }
 let cur = null;
 window.addEventListener("hashchange", go);
@@ -323,15 +351,15 @@ function go() {
   $("#tabs").hidden = !inSession; document.body.classList.toggle("in-session", inSession); applyLayout();
   if (!inSession) { if (r.view !== lastDashView) { $("#dash").scrollTop = 0; lastDashView = r.view; } renderSide(); $("#subtitle").textContent = ""; renderDash(); loadStats().then(renderDash); return; }
   if (r.view === "job") {
-    const j = data.jobs.find((x) => x.id === r.id);
-    cur = { kind: "job", id: r.id, target: `job:${r.id}`, sessionId: j?.sessionId, title: j?.name || r.id };
+    const j = findJob(r.id, r.node);
+    cur = { kind: "job", node: r.node, id: r.id, target: `job:${r.id}`, sessionId: j?.sessionId, title: j?.name || r.id };
   } else if (r.view === "t") {
-    const t = data.transcripts.find((x) => x.sessionId === r.id);
-    cur = { kind: "transcript", id: r.id, sessionId: r.id, title: t?.title || r.id };
-  } else if (r.view === "tmux") cur = { kind: "tmux", id: r.id, target: `tmux:${r.id}`, title: `tmux: ${r.id}` };
-  else if (r.view === "shell") cur = { kind: "shell", id: "quarterdeck", target: "shell:", title: "shell (tmux quarterdeck)" };
+    const t = data.transcripts.find((x) => x.sessionId === r.id && (x.node || "") === r.node);
+    cur = { kind: "transcript", node: r.node, id: r.id, sessionId: r.id, title: t?.title || r.id };
+  } else if (r.view === "tmux") cur = { kind: "tmux", node: r.node, id: r.id, target: `tmux:${r.id}`, title: `tmux: ${r.id}` };
+  else if (r.view === "shell") cur = { kind: "shell", node: r.node, id: "quarterdeck", target: "shell:", title: "shell (tmux quarterdeck)" };
   else { location.hash = ""; return; }
-  $("#subtitle").textContent = cur.title;
+  $("#subtitle").textContent = (multiHost() ? `[${hostLabel(cur.node)}] ` : "") + cur.title;
   const has = { chat: !!cur.sessionId, term: !!cur.target, split: !!(cur.sessionId && cur.target), changes: !!cur.sessionId };
   document.querySelectorAll("#tabs .tab").forEach((b) => (b.hidden = !has[b.dataset.tab]));
   cur.has = has;
@@ -350,25 +378,25 @@ function refreshMeta() {
   if (!cur) return;
   const m = $("#meta");
   if (cur.kind === "job") {
-    const j = data.jobs.find((x) => x.id === cur.id);
+    const j = findJob(cur.id, cur.node);
     if (!j) { m.innerHTML = `<span>${esc(cur.id)}</span>`; m._sig = ""; return; }
     if (!cur.sessionId && j.sessionId) { cur.sessionId = j.sessionId; go(); return; }
     const st = jobState(j); const nt = isBlocked(j) ? needsText(j.needs) : "";
     // One row: name · state · detail · Stop (only while it is doing something) · ⋯ (full detail, folder, id, Close).
     const canStop = st === "working" || st === "blocked";
-    const html = `<div class="meta-row"><b class="meta-name">${esc(j.name)}</b><span class="chip ${st}">${esc(st)}</span>${acctBadge(j.profile)}<span class="meta-detail">${esc(j.detail)}</span><span class="spacer"></span>
+    const html = `<div class="meta-row"><b class="meta-name">${esc(j.name)}</b><span class="chip ${st}">${esc(st)}</span>${hostChip(j.node)}${acctBadge(j.profile, j.node)}<span class="meta-detail">${esc(j.detail)}</span><span class="spacer"></span>
       ${canStop ? `<button id="stopBtn" class="danger">Stop</button>` : ""}<button id="moreBtn" class="icon" title="Details and actions" aria-expanded="${!!cur.metaOpen}">⋯</button></div>
       ${nt && nt !== j.detail ? `<div class="needs">⚑ ${esc(nt)}</div>` : ""}
       <div class="meta-more" ${cur.metaOpen ? "" : "hidden"}><div class="mm-detail">${esc(j.detail || j.intent || "")}</div><div class="mm-row"><span title="${esc(j.cwd)}">${esc(short(j.cwd))}</span><span>${esc(j.id)}</span><span class="spacer"></span><button id="rmBtn" title="Close and remove from the list (transcript is kept)">× Close</button></div></div>`;
     if (m._sig === html) return; m._sig = html; m.innerHTML = html; // unchanged → keep the DOM (no flicker, no lost taps)
     const toggle = () => { cur.metaOpen = !cur.metaOpen; m._sig = ""; refreshMeta(); };
     $("#moreBtn").onclick = toggle; m.querySelector(".meta-detail").onclick = toggle;
-    $("#rmBtn").onclick = () => removeJob(j.id);
-    if ($("#stopBtn")) $("#stopBtn").onclick = async () => { if (!confirm(`Stop session "${j.name}"? (The conversation is kept.)`)) return; try { await api("/api/stop", { id: j.id }); toast("stopped"); poll(); } catch (e) { toast(e.message); } };
+    $("#rmBtn").onclick = () => removeJob(j.id, j.node);
+    if ($("#stopBtn")) $("#stopBtn").onclick = async () => { if (!confirm(`Stop session "${j.name}"? (The conversation is kept.)`)) return; try { await api(nb(j.node) + "/api/stop", { id: j.id }); toast("stopped"); poll(); } catch (e) { toast(e.message); } };
   } else if (cur.kind === "transcript") {
     m._sig = "";
-    const t = data.transcripts.find((x) => x.sessionId === cur.id);
-    m.innerHTML = `<b class="meta-name">${esc(cur.title)}</b><span class="chip">interactive transcript</span><span>${esc(short(t?.cwd))}</span><span class="spacer"></span>${multiAccount() ? `<select id="resumeProfile" title="Account that resumes this conversation">${acctOptions(cur.resumeProfile || "default")}</select>` : ""}<button id="resumeBtn">Resume in background</button>`;
+    const t = data.transcripts.find((x) => x.sessionId === cur.id && (x.node || "") === (cur.node || ""));
+    m.innerHTML = `<b class="meta-name">${esc(cur.title)}</b><span class="chip">interactive transcript</span><span>${esc(short(t?.cwd))}</span><span class="spacer"></span>${hostChip(cur.node)}${multiAccount(cur.node) ? `<select id="resumeProfile" title="Account that resumes this conversation">${acctOptions(cur.resumeProfile || "default", cur.node)}</select>` : ""}<button id="resumeBtn">Resume in background</button>`;
     $("#resumeBtn").onclick = () => resume("");
     if ($("#resumeProfile")) $("#resumeProfile").onchange = (e) => { cur.resumeProfile = e.target.value; };
   } else m.innerHTML = `<b class="meta-name">${esc(cur.title)}</b><span class="chip">${esc(cur.kind)}</span><span>persistent — closing this page does not stop it</span>`;
@@ -403,7 +431,7 @@ function openChat(opt = {}) {
   // What arrived since you last read this session (on this device) gets a "new since" divider.
   if (cur.seenAt === undefined) cur.seenAt = Number(store.get(`seen:${cur.sessionId}`)) || 0;
   const q = `session=${encodeURIComponent(cur.sessionId)}&limit=${cur.tailLimit}&bytes=${Math.min(40_000_000, cur.tailLimit * 20_000)}`;
-  const ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws/tail?${q}`);
+  const ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}${nb(cur.node)}/ws/tail?${q}`);
   cur.tailWs = ws; const ctx = cur;
   ws.onmessage = (m) => {
     const d = JSON.parse(m.data); if (d.t !== "events" || ctx !== cur) return;
@@ -498,7 +526,7 @@ async function pollSub(toolId, force) {
   const ctx = cur, sub = ctx?.subs.get(toolId); if (!sub || (sub.busy && !force)) return;
   sub.busy = true;
   try {
-    const d = await api(`/api/subagent?session=${encodeURIComponent(ctx.sessionId)}&tool=${encodeURIComponent(toolId)}`);
+    const d = await api(`${nb(ctx.node)}/api/subagent?session=${encodeURIComponent(ctx.sessionId)}&tool=${encodeURIComponent(toolId)}`);
     if (ctx !== cur || !d.found) return;
     // Async sub-agents finish with a task notification (markBgDone); the file's own status is display-only —
     // right after launch it can briefly read "done" before the first step is written.
@@ -519,7 +547,7 @@ async function pollBg(taskId) {
   const ctx = cur, bg = ctx?.bgs.get(taskId); if (!bg || bg.busy) return;
   bg.busy = true;
   try {
-    const d = await api(`/api/bgout?session=${encodeURIComponent(ctx.sessionId)}&task=${encodeURIComponent(taskId)}`);
+    const d = await api(`${nb(ctx.node)}/api/bgout?session=${encodeURIComponent(ctx.sessionId)}&task=${encodeURIComponent(taskId)}`);
     if (ctx !== cur) return;
     const out = bg.box.querySelector(".bgout");
     if (!d.exists) { out.textContent = bg.done ? "(output file no longer exists)" : "(no output yet)"; return; }
@@ -590,7 +618,7 @@ function addEvent(e) {
 async function loadChanges() {
   const el = $("#changes"); const ctx = cur;
   if (!el.dataset.loaded) el.innerHTML = `<div class="empty">loading…</div>`;
-  let d; try { d = await api(`/api/changes?session=${encodeURIComponent(cur.sessionId)}`); } catch (e) { el.innerHTML = `<div class="empty">${esc(e.message)}</div>`; return; }
+  let d; try { d = await api(`${nb(cur.node)}/api/changes?session=${encodeURIComponent(cur.sessionId)}`); } catch (e) { el.innerHTML = `<div class="empty">${esc(e.message)}</div>`; return; }
   if (ctx !== cur) return;
   const open = new Set([...el.querySelectorAll("details.file[open]")].map((x) => x.dataset.p));
   el.dataset.loaded = "1";
@@ -633,10 +661,11 @@ function openTerm() {
   if (wide() && cur.tab === "term") term.focus();
 }
 function connectPty(ctx) {
-  const ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws/pty?target=${encodeURIComponent(ctx.target)}`);
+  const ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}${nb(ctx.node)}/ws/pty?target=${encodeURIComponent(ctx.target)}`);
   ws.binaryType = "arraybuffer"; ctx.ptyWs = ws;
   ws.onopen = () => { ctx.retry = 0; ctx.term.reset(); fitTerm(true); };
   ws.onmessage = (m) => {
+    if (ctx.closing || ctx !== cur) return; // late bytes after a view switch: the terminal is already disposed
     if (typeof m.data === "string") { const d = JSON.parse(m.data); if (d.t === "exit") { ctx.term.write("\r\n\x1b[33m[process exited — reopen the session to restart it]\x1b[0m\r\n"); ctx.exited = true; } return; }
     ctx.term.write(new Uint8Array(m.data));
   };
@@ -670,7 +699,7 @@ function renderKeys() {
   k.querySelectorAll("[data-k]").forEach((b) => (b.onclick = async (ev) => {
     ev.preventDefault(); const seq = KEYS[+b.dataset.k][1];
     if (cur.ptyWs?.readyState === 1) sendPty({ t: "in", d: seq });
-    else await api("/api/keys", { target: cur.target, data: seq }).catch((e) => toast(e.message));
+    else await api(nb(cur.node) + "/api/keys", { target: cur.target, data: seq }).catch((e) => toast(e.message));
     if (wide()) cur.term?.focus();
   }));
   k.querySelector("[data-redraw]").onclick = () => sendPty({ t: "redraw" });
@@ -692,7 +721,7 @@ $("#composer").onsubmit = async (e) => {
   try {
     if (cur.kind === "transcript") await resume(text);
     else if (cur.ptyWs?.readyState === 1) { sendPty({ t: "in", d: `\x1b[200~${text}\x1b[201~` }); setTimeout(() => sendPty({ t: "in", d: "\r" }), 150); }
-    else await api("/api/send", { target: cur.target, text });
+    else await api(nb(cur.node) + "/api/send", { target: cur.target, text });
     input.value = ""; input.style.height = "auto"; syncSend();
     if (cur.kind === "job" && !$("#chat").hidden && text.trim()) { addPending(text); cur.workSince = cur.awaitingSince = Date.now(); renderActivity(); }
     else toast("sent");
@@ -700,10 +729,11 @@ $("#composer").onsubmit = async (e) => {
 };
 async function resume(prompt) {
   if (!confirm("Resume this conversation as a background session? (If it is still open in a terminal, Claude starts a copy.)")) return;
-  const r = await api("/api/resume", { sessionId: cur.id, prompt, profile: $("#resumeProfile")?.value || "default" });
+  const node = cur.node;
+  const r = await api(nb(node) + "/api/resume", { sessionId: cur.id, prompt, profile: $("#resumeProfile")?.value || "default" });
   toast(r.out.split("\n")[0] || "resumed");
   await poll();
-  if (r.id) location.hash = `#/job/${r.id}`;
+  if (r.id) location.hash = hrefOf("job", r.id, node);
 }
 
 // ───────────── menus in Chat view (AskUserQuestion, permission prompts) ─────────────
@@ -712,7 +742,7 @@ async function pollPrompt() {
   const ctx = cur; if (!ctx?.target || ctx.promptBusy) return;
   ctx.promptBusy = true;
   try {
-    const d = await api("/api/prompt", { target: ctx.target });
+    const d = await api(nb(ctx.node) + "/api/prompt", { target: ctx.target });
     if (ctx === cur) renderPrompt(d.menu);
   } catch {} finally { ctx.promptBusy = false; }
 }
@@ -738,7 +768,7 @@ function renderPrompt(m) {
     <div class="pc-foot"><button data-k="up">↑</button><button data-k="down">↓</button><button data-k="enter">⏎ Enter</button><button data-k="esc">Esc</button></div>`;
   const send = async (data) => {
     try {
-      if (cur.ptyWs?.readyState === 1) sendPty({ t: "in", d: data }); else await api("/api/keys", { target: cur.target, data });
+      if (cur.ptyWs?.readyState === 1) sendPty({ t: "in", d: data }); else await api(nb(cur.node) + "/api/keys", { target: cur.target, data });
       setTimeout(pollPrompt, 400); setTimeout(pollPrompt, 1200);
     } catch (e) { toast(e.message); }
   };
@@ -757,19 +787,31 @@ function teardown() {
 
 // ───────────── new session ─────────────
 function openNew() {
-  $("#cwdList").innerHTML = data.cwds.map((c) => `<option value="${esc(c)}">`).join("");
-  if (!$("#newCwd").value) $("#newCwd").value = data.cwds[0] || "";
-  $("#newProfileRow").hidden = !multiAccount(); $("#newProfile").innerHTML = acctOptions($("#newProfile").value || "default");
+  const hosts = [{ id: "", label: hostLabel("") }, ...(fleet.nodes || []).filter((n) => n.online).map((n) => ({ id: n.id, label: n.label }))];
+  const sel = $("#newHost"), keep = sel.value;
+  sel.innerHTML = hosts.map((h) => `<option value="${esc(h.id)}">${esc(h.label)}</option>`).join("");
+  sel.value = hosts.some((h) => h.id === keep) ? keep : hosts.some((h) => h.id === cur?.node) ? cur.node : "";
+  $("#newHostRow").hidden = hosts.length < 2;
+  fillNewHost(sel.value !== keep);
   $("#newDlg").showModal(); $("#newPrompt").focus();
 }
+// Folders and accounts belong to the chosen machine.
+function fillNewHost(resetCwd) {
+  const node = $("#newHost").value; const cwds = (node ? nodeOf(node)?.data?.cwds : data.cwds) || [];
+  $("#cwdList").innerHTML = cwds.map((c) => `<option value="${esc(c)}">`).join("");
+  if (resetCwd || !$("#newCwd").value) $("#newCwd").value = cwds[0] || "";
+  $("#newProfileRow").hidden = !multiAccount(node); $("#newProfile").innerHTML = acctOptions($("#newProfile").value || "default", node);
+}
+$("#newHost").onchange = () => fillNewHost(true);
 $("#newBtn").onclick = openNew;
 $("#newPrompt").addEventListener("keydown", (e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); $("#newDlg").close("ok"); } });
 $("#newDlg").addEventListener("close", async () => {
   if ($("#newDlg").returnValue !== "ok") return;
   try {
-    const r = await api("/api/new", { cwd: $("#newCwd").value, name: $("#newName").value, prompt: $("#newPrompt").value, permissionMode: $("#newMode").value, profile: $("#newProfile").value || "default" });
+    const node = $("#newHost").value;
+    const r = await api(nb(node) + "/api/new", { cwd: $("#newCwd").value, name: $("#newName").value, prompt: $("#newPrompt").value, permissionMode: $("#newMode").value, profile: $("#newProfile").value || "default" });
     toast(r.out.split("\n")[0] || "started"); $("#newPrompt").value = ""; $("#newName").value = "";
-    await poll(); if (r.id) location.hash = `#/job/${r.id}`;
+    await poll(); if (r.id) location.hash = hrefOf("job", r.id, node);
   } catch (e) { toast(e.message, 5000); }
 });
 

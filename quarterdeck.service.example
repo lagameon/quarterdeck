@@ -1,0 +1,18 @@
+# Linux login service (systemd user unit). Replace /home/you, then:
+#   mkdir -p ~/.config/systemd/user && cp quarterdeck.service.example ~/.config/systemd/user/quarterdeck.service
+#   systemctl --user daemon-reload && systemctl --user enable --now quarterdeck
+#   loginctl enable-linger $USER     # keep it running without an open login
+# `tailscale whois` must work for this user; if it says "access denied", run once: sudo tailscale set --operator=$USER
+[Unit]
+Description=Quarterdeck (remote UI for Claude Code)
+After=network-online.target tailscaled.service
+
+[Service]
+WorkingDirectory=/home/you/quarterdeck
+ExecStart=/home/you/.bun/bin/bun /home/you/quarterdeck/server.ts
+Environment=PATH=/home/you/.local/bin:/home/you/.bun/bin:/usr/local/bin:/usr/bin:/bin
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=default.target

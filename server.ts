@@ -5,7 +5,7 @@ import webpush from "web-push";
 import { Terminal as HeadlessTerm } from "@xterm/headless";
 import { parseMenu } from "./menu";
 import { join, basename } from "node:path";
-import { homedir } from "node:os";
+import { homedir, hostname as osHostname } from "node:os";
 import type { ServerWebSocket } from "bun";
 
 const HOME = homedir();
@@ -391,7 +391,8 @@ class Tail {
 // One PTY per target, shared by all viewers (tmux-like). Output kept in a ring buffer
 // so a reconnecting / second device gets the screen back (mosh-like).
 type WsAuth = { who: string; peer?: string }; // peer = tailnet address to re-check (absent for plain local)
-type WsData = ({ kind: "pty"; key: string } | { kind: "tail"; tail: Tail; limit: number; timer?: Timer }) & WsAuth;
+type WsData = ({ kind: "pty"; key: string } | { kind: "tail"; tail: Tail; limit: number; timer?: Timer }
+  | { kind: "proxy"; target: string; queue: (string | Buffer)[]; up?: WebSocket }) & WsAuth;
 const openSockets = new Set<ServerWebSocket<WsData>>();
 const RING = 400_000;
 class Pty {
@@ -676,18 +677,82 @@ const jobStateOf = (j: Job) => (j.phase === "working" ? "working" : j.phase === 
   : j.tempo === "blocked" || j.state === "blocked" || (j.needs && j.state !== "done") ? "blocked"
   : j.phase === "idle" && j.state === "working" ? "done" : j.tempo === "active" ? "working" : j.state);
 const textOf = (v: any) => (v == null ? "" : typeof v === "string" ? v : v.text || v.question || v.result || v.headline || JSON.stringify(v));
+// ───────────────────────────── fleet (one page for several machines) ─────────────────────────────
+// config.json: "nodeId" / "nodeLabel" name this machine; "nodes": [{"id": "mbp", "label": "MBP", "url": "http://100.x.y.z:7690"}]
+// lists the other machines running Quarterdeck. This machine (the hub) forwards /n/<id>/api|ws/… to them — only
+// to nodes named here — and polls their session lists so push notifications cover every machine. Each node still
+// authorises the hub itself (tailscale whois: the owner's own, untagged device).
+type NodeConf = { id: string; label: string; url: string };
+const FLEET = (() => {
+  const c = readJson(join(CONF_DIR, "config.json")) || {};
+  const host = osHostname().split(".")[0].toLowerCase();
+  const clean = (v: unknown) => String(v || "").toLowerCase().replace(/[^\w-]/g, "").slice(0, 24);
+  const self = { id: clean(c.nodeId) || clean(host) || "local", label: String(c.nodeLabel || c.nodeId || host).slice(0, 24) };
+  const nodes: NodeConf[] = [];
+  for (const n of Array.isArray(c.nodes) ? c.nodes : []) {
+    const id = clean(n?.id), url = String(n?.url || "").replace(/\/+$/, "");
+    if (!id || id === self.id || nodes.some((x) => x.id === id) || !/^https?:\/\/[\w.\-\[\]:]+$/.test(url)) { console.warn(`[fleet] ignoring node entry ${JSON.stringify(n)}`); continue; }
+    nodes.push({ id, label: String(n.label || id).slice(0, 24), url });
+  }
+  return { self, nodes };
+})();
+type NodeState = { online: boolean; at: number; lastOk: number; error: string; data: any };
+const nodeState = new Map<string, NodeState>(); const nodeBusy = new Set<string>();
+async function pollNode(n: NodeConf) {
+  if (nodeBusy.has(n.id)) return; nodeBusy.add(n.id);
+  const prev = nodeState.get(n.id);
+  try {
+    const r = await fetch(`${n.url}/api/sessions`, { signal: AbortSignal.timeout(6000) });
+    if (!r.ok) throw new Error(`HTTP ${r.status}${r.status === 403 ? " (the node does not accept this machine: check its owner / Tailscale login)" : ""}`);
+    nodeState.set(n.id, { online: true, at: Date.now(), lastOk: Date.now(), error: "", data: await r.json() });
+    if (!prev?.online) console.log(`[fleet] ${n.label} online`);
+  } catch (e: any) {
+    if (prev?.online !== false) console.warn(`[fleet] ${n.label} offline: ${e?.message || e}`);
+    nodeState.set(n.id, { online: false, at: Date.now(), lastOk: prev?.lastOk || 0, error: String(e?.message || e).slice(0, 200), data: prev?.data || null });
+  } finally { nodeBusy.delete(n.id); }
+}
+if (FLEET.nodes.length) {
+  const tick = () => FLEET.nodes.forEach((n) => pollNode(n)); tick(); setInterval(tick, 3000);
+  console.log(`[fleet] this machine: ${FLEET.self.label}; nodes: ${FLEET.nodes.map((n) => `${n.label} ${n.url}`).join(", ")}`);
+}
+const fleetStatus = () => ({ self: FLEET.self, nodes: FLEET.nodes.map((n) => { const st = nodeState.get(n.id); return { id: n.id, label: n.label, online: !!st?.online, lastOk: st?.lastOk || 0, error: st?.error || "", data: st?.data || null }; }) });
+async function proxyToNode(req: Request, server: any, url: URL, id: string, inner: string, auth: { who: string }, ip?: string): Promise<Response | undefined> {
+  const node = FLEET.nodes.find((n) => n.id === id); if (!node) return json({ error: "unknown machine" }, 404);
+  if (!sameOrigin(req)) return json({ error: "bad origin" }, 403);
+  const target = node.url + inner + url.search;
+  if (inner.startsWith("/ws/")) {
+    if (server.upgrade(req, { data: { kind: "proxy", target: target.replace(/^http/, "ws"), queue: [], who: auth.who, peer: authPeer(req, ip) } })) return;
+    return new Response("upgrade failed", { status: 400 });
+  }
+  try {
+    const r = await fetch(target, { method: req.method, redirect: "manual", signal: AbortSignal.timeout(60_000),
+      headers: { "content-type": req.headers.get("content-type") || "application/json" },
+      body: req.method === "GET" || req.method === "HEAD" ? undefined : await req.arrayBuffer() });
+    return new Response(await r.arrayBuffer(), { status: r.status, headers: { "content-type": r.headers.get("content-type") || "application/json", "cache-control": "no-store" } });
+  } catch (e: any) { return json({ error: `${node.label} is unreachable (${e?.message || e})` }, 502); }
+}
+
 let lastStates: Map<string, string> | null = null;
+const seenNodes = new Set<string>(); // a node's first answer is a baseline, not a burst of notifications
 function watchJobs() {
-  let jobs: Job[]; try { jobs = listJobs(); } catch { return; }
-  const now = new Map(jobs.map((j) => [j.id, jobStateOf(j)]));
-  if (lastStates) for (const j of jobs) {
-    const st = now.get(j.id)!, prev = lastStates.get(j.id);
+  let local: Job[]; try { local = listJobs(); } catch { return; }
+  // Every machine's sessions, keyed "<node>:<id>" (this machine = ""). An offline node keeps its last states,
+  // so coming back does not re-announce what was already waiting.
+  const all: { key: string; j: Job; node: NodeConf | null }[] = local.map((j) => ({ key: `:${j.id}`, j, node: null }));
+  for (const n of FLEET.nodes) { const ns = nodeState.get(n.id); if (ns?.online && Array.isArray(ns.data?.jobs)) for (const j of ns.data.jobs) all.push({ key: `${n.id}:${j.id}`, j, node: n }); }
+  const now = new Map(all.map((x) => [x.key, jobStateOf(x.j)]));
+  if (lastStates) for (const [k, v] of lastStates) if (!now.has(k) && FLEET.nodes.some((n) => k.startsWith(`${n.id}:`) && !nodeState.get(n.id)?.online)) now.set(k, v);
+  if (lastStates) for (const { key, j, node } of all) {
+    if (node && !seenNodes.has(node.id)) continue;
+    const st = now.get(key)!, prev = lastStates.get(key);
+    const url = node ? `/#/job/${j.id}/${node.id}` : `/#/job/${j.id}`, at = node ? `[${node.label}] ` : "";
     if (st === prev) continue;
     const hide = !!notifyConf().hideBody; // optional lock-screen privacy for all sessions
-    if (st === "blocked") sendAll({ title: hide ? "⚑ A session needs you" : `⚑ ${j.name}`, body: hide ? "needs your reply" : (textOf(j.needs) || j.detail || "needs your input").slice(0, 300), url: `/#/job/${j.id}`, tag: j.id });
-    else if (st === "done" && prev !== undefined && notifyConf().notifyDone !== false) sendAll({ title: hide ? "✓ A session finished" : `✓ ${j.name}`, body: hide ? "finished" : (textOf(j.output) || j.detail || "finished").slice(0, 300), url: `/#/job/${j.id}`, tag: j.id });
+    if (st === "blocked") sendAll({ title: hide ? "⚑ A session needs you" : `⚑ ${at}${j.name}`, body: hide ? "needs your reply" : (textOf(j.needs) || j.detail || "needs your input").slice(0, 300), url, tag: key });
+    else if (st === "done" && prev !== undefined && notifyConf().notifyDone !== false) sendAll({ title: hide ? "✓ A session finished" : `✓ ${at}${j.name}`, body: hide ? "finished" : (textOf(j.output) || j.detail || "finished").slice(0, 300), url, tag: key });
   }
   lastStates = now;
+  for (const n of FLEET.nodes) if (nodeState.get(n.id)?.online) seenNodes.add(n.id);
 }
 setInterval(watchJobs, 2000); watchJobs(); // 2 s: short "active" phases of quick follow-up replies must not slip between checks
 
@@ -725,6 +790,8 @@ async function handle(req: Request, server: any): Promise<Response | undefined> 
   const auth = authorize(req, ip);
   if (!auth.ok) return new Response("forbidden: not an authorised Tailscale identity\n", { status: 403 });
   const url = new URL(req.url); const path = url.pathname;
+  const viaNode = path.match(/^\/n\/([\w-]{1,24})(\/(?:api|ws)\/.*)$/); // another machine, same checks on the inner path
+  if (viaNode) return fetchSiteOk(req, viaNode[2]) ? proxyToNode(req, server, url, viaNode[1], viaNode[2], auth, ip) : new Response("forbidden: cross-site request\n", { status: 403 });
   if (!fetchSiteOk(req, path)) return new Response("forbidden: cross-site request\n", { status: 403 });
 
   if (path === "/ws/pty" || path === "/ws/tail") {
@@ -746,6 +813,7 @@ async function handle(req: Request, server: any): Promise<Response | undefined> 
 
   if (path.startsWith("/api/")) {
     if (req.method !== "GET" && !sameOrigin(req)) return json({ error: "bad origin" }, 403);
+    if (path === "/api/fleet") return json(fleetStatus());
     if (path === "/api/sessions") {
       const jobs = listJobs();
       const jobSids = new Set(jobs.map((j) => j.sessionId));
@@ -784,7 +852,7 @@ async function handle(req: Request, server: any): Promise<Response | undefined> 
       // Output of a background shell: only <tmp>/claude-<uid>/<project>/<session>/tasks/<task>.output.
       const sid = url.searchParams.get("session") || "", task = url.searchParams.get("task") || "";
       if (!/^[0-9a-f-]{8,64}$/i.test(sid) || !/^[a-z0-9]{4,24}$/i.test(task)) return json({ error: "bad id" }, 400);
-      const root = `/private/tmp/claude-${process.getuid?.() ?? ""}`;
+      const root = `${existsSync("/private/tmp") ? "/private/tmp" : "/tmp"}/claude-${process.getuid?.() ?? ""}`;
       let file = "";
       try { for (const proj of readdirSync(root)) { const c = join(root, proj, sid, "tasks", `${task}.output`); if (existsSync(c)) { file = c; break; } } } catch {}
       if (!file) return json({ exists: false });
@@ -850,6 +918,14 @@ const websocket = {
   open(ws: ServerWebSocket<WsData>) {
     openSockets.add(ws);
     const d = ws.data;
+    if (d.kind === "proxy") { // relay to the node's own /ws/…; the node authorises this machine itself
+      const up = new WebSocket(d.target); up.binaryType = "arraybuffer"; d.up = up;
+      up.onopen = () => { for (const m of d.queue) up.send(m); d.queue = []; };
+      up.onmessage = (m) => { try { typeof m.data === "string" ? ws.send(m.data) : ws.sendBinary(new Uint8Array(m.data as ArrayBuffer)); } catch {} };
+      up.onclose = (e) => { try { ws.close(e.code >= 3000 || e.code === 1000 || e.code === 1008 ? e.code : 1011, e.reason || "machine closed the connection"); } catch {} };
+      up.onerror = () => { try { ws.close(1011, "machine unreachable"); } catch {} };
+      return;
+    }
     if (d.kind === "pty") {
       const p = getPty(d.key); if (!p) { ws.close(1011, "spawn failed"); return; }
       p.clients.add(ws); p.lastClientAt = Date.now();
@@ -865,7 +941,9 @@ const websocket = {
     }
   },
   message(ws: ServerWebSocket<WsData>, msg: string | Buffer) {
-    const d = ws.data; if (d.kind !== "pty") return;
+    const d = ws.data;
+    if (d.kind === "proxy") { if (d.up?.readyState === 1) d.up.send(msg); else if (d.queue.length < 200) d.queue.push(msg); return; }
+    if (d.kind !== "pty") return;
     const p = ptys.get(d.key); if (!p) return;
     let m: any; try { m = JSON.parse(String(msg)); } catch { return; }
     p.lastClientAt = Date.now();
@@ -877,6 +955,7 @@ const websocket = {
     openSockets.delete(ws);
     const d = ws.data;
     if (d.kind === "pty") { const p = ptys.get(d.key); if (p) { p.clients.delete(ws); p.lastClientAt = Date.now(); } }
+    else if (d.kind === "proxy") { try { d.up?.close(); } catch {} }
     else if (d.timer) clearInterval(d.timer);
   },
   idleTimeout: 120, sendPings: true,

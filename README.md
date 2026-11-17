@@ -19,6 +19,7 @@ It is built directly on Claude Code's own background sessions (`claude --bg`, `c
 - **Push notifications** — Web Push (iOS/iPadOS Home Screen app, desktop browsers) and optionally a Telegram bot, sent by the server when a session becomes *blocked* or *done*. Tapping opens that session.
 - **Overview** — today's tiles (running / waiting / done, active sessions, your messages, Claude turns and tool calls, output and input tokens by model) and 14-day charts, built incrementally from your local transcripts. Optional subscription-quota tiles from a [quotad](#optional-quota-tiles)-compatible endpoint.
 - **Several accounts** — keep more than one Claude account signed in side by side and pick the account when you start or resume a session; every session shows which account it runs on. See [Several accounts](#several-accounts).
+- **Several machines** — one page for the Claude Code sessions on all your machines (e.g. a desktop, a laptop and a Linux workstation): every session shows its machine, and Start / Chat / Terminal / menus / Stop act on the machine it lives on. See [Several machines](#several-machines).
 - **Keyboard** — ⌘K session switcher, Alt+1–4 Chat / Terminal / Split / Changes, Alt+N new session, `/` focus the composer.
 
 ## Requirements
@@ -91,6 +92,25 @@ Claude Code keeps one login per **config directory** (`CLAUDE_CONFIG_DIR`). Quar
 
 The overview then shows one tile per account (email, plan, login expiry, or the login command if it isn't signed in), the *New* dialog and *Resume* get an account picker, and every session card shows its account. A session keeps the account it was started with; stop, close, attach and send all run with that session's `CLAUDE_CONFIG_DIR`.
 
+## Several machines
+
+Run Quarterdeck on every machine that runs Claude Code. Pick one, always-on machine as the **hub**: the address you open on your phone / iPad / laptop. The others are **nodes**. In the hub's `config.json`:
+
+```json
+{ "nodeId": "studio", "nodeLabel": "Studio",
+  "nodes": [ { "id": "laptop", "label": "Laptop", "url": "http://100.x.y.z:7690" },
+             { "id": "box",    "label": "Workstation", "url": "http://100.a.b.c:7690" } ] }
+```
+
+`url` is each node's Tailscale address and port. On each node, `nodeId` / `nodeLabel` are optional; its `owner` must be the same Tailscale login.
+
+- The hub forwards `/n/<id>/api/…` and `/n/<id>/ws/…` to that node — **only to nodes listed in its config** — and polls each node's session list every 3 s, so push notifications (sent by the hub only) cover every machine; their titles carry the machine name.
+- Each node still authorises the hub itself: the hub's request comes from the hub's own Tailscale address, so `tailscale whois` must resolve it to `owner`'s own, untagged device. Nothing else is shared between machines: no keys, no tokens.
+- A machine that is asleep or offline shows a banner; its sessions are listed as last seen, and actions on them fail until it is back. When it comes back, nothing that was already waiting is re-announced.
+- The overview's token statistics are the hub's own machine only.
+
+Linux nodes: see `quarterdeck.service.example` (a systemd user service; run `loginctl enable-linger $USER` so it starts without a login).
+
 ## Security model
 
 **Anyone who gets past Quarterdeck's checks has the same power as you at this machine's terminal** — Claude sessions run with your permission modes, and the shell view is a shell. The checks are:
@@ -125,6 +145,7 @@ If you run a collector that exposes JSON like below, set `quotaUrl` and the over
 - Quarterdeck depends on Claude Code internals that are **not documented interfaces**: `~/.claude/jobs/*/state.json`, the transcript JSONL format in `~/.claude/projects/`, and the output of `claude --bg` / `claude agents --json`. A Claude Code update can break parts of it.
 - Menus are recognised by parsing the terminal screen (`menu.ts`); unusual menus may not be detected — the Terminal view always works.
 - Single user by design (one `owner`).
+- Several machines: the hub forwards to nodes over plain HTTP inside the tailnet (WireGuard-encrypted); don't point `nodes` at addresses outside your tailnet.
 - Starting a session in a directory Claude Code has never trusted fails; the CLI's message is shown as-is.
 
 ## Development
