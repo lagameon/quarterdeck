@@ -332,6 +332,38 @@ function barChart(title, days, val, tip, fmt) {
 function showTip(html, e) { const t = $("#tip"); t.innerHTML = html; t.hidden = false; const x = Math.min(innerWidth - t.offsetWidth - 8, e.clientX + 12); t.style.left = x + "px"; t.style.top = (e.clientY - t.offsetHeight - 10) + "px"; }
 function hideTip() { $("#tip").hidden = true; }
 
+// ───────────── machines: health + version (from each machine's own /api/sessions) ─────────────
+function machinesBlock() {
+  const mine = data.machine?.quarterdeck?.protocol || 0;
+  const ms = [{ id: "", label: hostLabel(""), m: data.machine, accounts: data.accounts || [], online: true },
+    ...(fleet.nodes || []).map((n) => ({ id: n.id, label: n.label, m: n.data?.machine, accounts: n.data?.accounts || [], online: n.online }))];
+  const warns = [], rows = [];
+  for (const x of ms) {
+    if (!x.online) continue; // the offline banner covers it
+    const h = x.m?.health, qd = x.m?.quarterdeck, bad = [];
+    if (x.id && (!qd || qd.protocol < mine)) { bad.push("old"); warns.push(`<b>${esc(x.label)}</b> runs an older Quarterdeck${qd ? ` (protocol ${qd.protocol}, this page expects ${mine})` : ""}: deploy the update to it.`); }
+    if (h?.disk?.low) { bad.push("disk"); warns.push(`<b>${esc(x.label)}</b>: disk almost full — ${h.disk.freePct}% free (${h.disk.freeGB} GB).`); }
+    for (const a of x.accounts) {
+      const left = a.loginExpiresAt ? (Date.parse(a.loginExpiresAt) - Date.now()) / 86400000 : Infinity;
+      if (!a.loggedIn) { bad.push("login"); warns.push(`<b>${esc(x.label)}</b>: Claude account ${esc(a.email || a.id)} is logged out.`); }
+      else if (left < 7) { bad.push("login"); warns.push(`<b>${esc(x.label)}</b>: Claude login (${esc(a.email || a.id)}) expires ${left < 1 ? "today" : `in ${Math.ceil(left)} days`}.`); }
+    }
+    if (!h) { rows.push(`<div class="mrow"><b>${esc(x.label)}</b><span class="dim">no machine data${qd ? "" : " (older version)"}</span></div>`); continue; }
+    const login = x.accounts.filter((a) => a.loggedIn && a.loginExpiresAt).map((a) => a.loginExpiresAt.slice(5, 10)).sort()[0];
+    const parts = [
+      h.disk ? `<span class="${h.disk.low ? "warnt" : ""}">disk ${h.disk.freePct}% free</span>` : "",
+      `load ${h.load1}/${h.cpus}`,
+      h.mem && h.mem.usedPct >= 0 ? `mem ${h.mem.usedPct}%` : "",
+      ...h.gpu.map((g) => `GPU ${g.utilPct}% · ${g.memUsedGB}/${g.memTotalGB} GB`),
+      h.claudeVersion ? `Claude ${esc(h.claudeVersion)}` : "",
+      login ? `<span class="${bad.includes("login") ? "warnt" : ""}">login until ${esc(login)}</span>` : "",
+    ].filter(Boolean);
+    rows.push(`<div class="mrow" title="Quarterdeck ${esc(qd?.version || "?")} · build ${esc(qd?.build || "?")} · protocol ${qd?.protocol ?? "?"}"><b>${esc(x.label)}</b>${parts.map((p) => `<span>${p}</span>`).join("")}</div>`);
+  }
+  const warnHtml = warns.length ? `<div class="hint warn">⚠ ${warns.join("<br>⚠ ")}</div>` : "";
+  return warnHtml + (multiHost() ? `<div class="machines">${rows.join("")}</div>` : "");
+}
+
 function renderDash() {
   dashSkeleton(); renderOverview();
   const blocked = data.jobs.filter(isBlocked);
@@ -346,7 +378,7 @@ function renderDash() {
     section("Interactive sessions (resume)", data.transcripts, trCard, { limit: 8, key: "tr" }) +
     section("tmux", data.tmux, tmuxCard, { empty: "no tmux sessions" }) +
     `<p><button id="shellBtn">Open shell (tmux “quarterdeck”)</button></p>`;
-  const off = (fleet.nodes || []).filter((n) => !n.online).map((n) => `<div class="hint warn">⚠ <b>${esc(n.label)}</b> is offline${n.lastOk ? ` (last seen ${ago(n.lastOk)} ago)` : ""}: its sessions are shown as they were, and actions on them wait until it is back.${n.error ? `<br><small>${esc(n.error)}</small>` : ""}</div>`).join("");
+  const off = (fleet.nodes || []).filter((n) => !n.online).map((n) => `<div class="hint warn">⚠ <b>${esc(n.label)}</b> is offline${n.lastOk ? ` (last seen ${ago(n.lastOk)} ago)` : ""}: its sessions are shown as they were, and actions on them wait until it is back.${n.error ? `<br><small>${esc(n.error)}</small>` : ""}</div>`).join("") + machinesBlock();
   const dt = $("#dashTop"); dt.hidden = wide(); dt.innerHTML = wide() ? "" : off + top;
   el.innerHTML = wide() ? off + hint + `<div class="cols"><div class="col">${top}</div><div class="col">${others}</div></div>` : others;
   $("#dash").scrollTop = y;

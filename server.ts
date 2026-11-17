@@ -5,9 +5,16 @@ import webpush from "web-push";
 import { Terminal as HeadlessTerm } from "@xterm/headless";
 import { parseMenu } from "./menu";
 import { startWatchdog } from "./lib/watchdog";
+import { PROTOCOL, buildId, startHealth } from "./lib/machine";
 import { join, basename } from "node:path";
 import { homedir, hostname as osHostname } from "node:os";
 import type { ServerWebSocket } from "bun";
+
+// `bun server.ts --build-id` prints the id of this code and exits (the deploy script compares it with the node's).
+const BUILD = buildId(import.meta.dir);
+if (process.argv.includes("--build-id")) { console.log(BUILD); process.exit(0); }
+const STARTED_AT = Date.now();
+const APP_VERSION: string = (() => { try { return JSON.parse(readFileSync(join(import.meta.dir, "package.json"), "utf8")).version || "?"; } catch { return "?"; } })();
 
 const HOME = homedir();
 const CLAUDE_DIR = join(HOME, ".claude");
@@ -863,6 +870,33 @@ async function proxyToNode(req: Request, server: any, url: URL, id: string, inne
   } catch (e: any) { return json({ error: `${node.label} is unreachable (${e?.message || e})` }, 502); }
 }
 
+// ───────────────────────────── this machine: build + health ─────────────────────────────
+const health = startHealth(run, CLAUDE_BIN, HOME);
+// "diskWarnPct" in config.json (default 10): below this much free space the page warns and a daily push goes out.
+const DISK_WARN_PCT = Number(CONFIG.diskWarnPct ?? 10);
+const machineInfo = () => { const h = health(); return { node: FLEET.self, quarterdeck: { version: APP_VERSION, build: BUILD, protocol: PROTOCOL, startedAt: STARTED_AT },
+  health: h && h.disk ? { ...h, disk: { ...h.disk, low: h.disk.freePct < DISK_WARN_PCT } } : h }; };
+// Push once a day per problem: disk almost full, an account logged out or its login about to expire.
+const alerted = new Map<string, number>();
+function healthAlerts() {
+  const machines = [{ id: "", label: FLEET.self.label, m: machineInfo() as any, accounts: accounts.peek() as any[] },
+    ...FLEET.nodes.filter((n) => nodeState.get(n.id)?.online).map((n) => { const d = nodeState.get(n.id)!.data || {}; return { id: n.id, label: n.label, m: d.machine, accounts: d.accounts || [] }; })];
+  const say = (key: string, title: string, body: string) => {
+    if (Date.now() - (alerted.get(key) || 0) < 24 * 3600_000) return; alerted.set(key, Date.now());
+    sendAll({ title, body, url: "/", tag: key });
+  };
+  for (const x of machines) {
+    const disk = x.m?.health?.disk;
+    if (disk?.low) say(`disk:${x.id}`, `⚠ ${x.label}: disk almost full`, `${disk.freePct}% free (${disk.freeGB} GB of ${disk.totalGB} GB)`);
+    for (const a of x.accounts) {
+      const left = a.loginExpiresAt ? (Date.parse(a.loginExpiresAt) - Date.now()) / 86400_000 : Infinity;
+      if (!a.loggedIn) say(`login:${x.id}:${a.id}`, `⚠ ${x.label}: Claude account ${a.email || a.id} is logged out`, "background sessions on this account can't run until you log in again");
+      else if (left < 3) say(`login:${x.id}:${a.id}`, `⚠ ${x.label}: Claude login expires ${left < 1 ? "today" : `in ${Math.ceil(left)} days`}`, `${a.email || a.id}: run \`claude auth login\` on ${x.label}`);
+    }
+  }
+}
+setInterval(healthAlerts, 5 * 60_000); setTimeout(healthAlerts, 60_000); // after the first node polls and health samples
+
 let lastStates: Map<string, string> | null = null;
 const seenNodes = new Set<string>(); // a node's first answer is a baseline, not a burst of notifications
 function watchJobs() {
@@ -945,6 +979,7 @@ async function handle(req: Request, server: any): Promise<Response | undefined> 
   if (path.startsWith("/api/")) {
     if (req.method !== "GET" && !sameOrigin(req)) return json({ error: "bad origin" }, 403);
     if (path === "/api/fleet") return json(fleetStatus());
+    if (path === "/api/hello") return json(machineInfo());
     if (path === "/api/projects") {
       const prof = profileById(url.searchParams.get("profile") || "default"); if (!prof) return json({ error: "unknown account" }, 400);
       const jobs = listJobs(); const tr = listTranscripts(40, new Set(jobs.map((j) => j.sessionId)));
@@ -962,7 +997,7 @@ async function handle(req: Request, server: any): Promise<Response | undefined> 
       const transcripts = listTranscripts(Number(url.searchParams.get("limit") || 40), jobSids);
       const tmux = await listTmux();
       const cwds = [...new Set([...jobs.map((j) => j.cwd), ...transcripts.map((t) => t.cwd)].filter(Boolean))].slice(0, 25);
-      return json({ jobs, transcripts, tmux, cwds, ptys: [...ptys.keys()], accounts: await accountsStatus(), who: auth.who, now: Date.now() });
+      return json({ jobs, transcripts, tmux, cwds, ptys: [...ptys.keys()], accounts: await accountsStatus(), machine: machineInfo(), who: auth.who, now: Date.now() });
     }
     if (path === "/api/job") {
       const id = url.searchParams.get("id") || "";
@@ -1112,6 +1147,7 @@ for (const hostname of hosts) {
   Bun.serve({ hostname, port: PORT, fetch: handle as any, websocket: websocket as any });
   console.log(`[quarterdeck] listening http://${hostname}:${PORT}  (owner=${OWNER})`);
 }
+console.log(`[quarterdeck] build ${BUILD} (protocol ${PROTOCOL})`);
 // "watchdogSeconds" in config.json (default 45, 0 = off): a main thread stuck that long gets the process restarted.
 const WATCHDOG_S = Number(process.env.QUARTERDECK_WATCHDOG ?? CONFIG.watchdogSeconds ?? 45);
 if (startWatchdog(WATCHDOG_S)) console.log(`[quarterdeck] watchdog: restart if unresponsive for ${WATCHDOG_S} s`);
