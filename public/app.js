@@ -48,7 +48,7 @@ async function api(path, body) {
   if (!r.ok) throw new Error(d.error || d.out || r.statusText);
   return d;
 }
-const short = (p) => (p || "").replace(/^\/Users\/[^/]+/, "~");
+const short = (p) => (p || "").replace(/^\/(?:Users|home)\/[^/]+/, "~");
 // mcp__server__tool → tool (full name on hover). A bare path shows the file name first, the folder dimmed after it,
 // so the part that matters survives truncation on a phone.
 const toolName = (n) => (/^mcp__/.test(n || "") ? n.split("__").pop() : n);
@@ -358,6 +358,7 @@ function go() {
     cur = { kind: "transcript", node: r.node, id: r.id, sessionId: r.id, title: t?.title || r.id };
   } else if (r.view === "tmux") cur = { kind: "tmux", node: r.node, id: r.id, target: `tmux:${r.id}`, title: `tmux: ${r.id}` };
   else if (r.view === "shell") cur = { kind: "shell", node: r.node, id: "quarterdeck", target: "shell:", title: "shell (tmux quarterdeck)" };
+  else if (r.view === "here") cur = { kind: "here", node: r.node, id: r.id, target: `here:${r.id}`, title: `claude in ${r.id.slice(r.id.indexOf(":") + 1).split("/").pop()}` };
   else { location.hash = ""; return; }
   $("#subtitle").textContent = (multiHost() ? `[${hostLabel(cur.node)}] ` : "") + cur.title;
   const has = { chat: !!cur.sessionId, term: !!cur.target, split: !!(cur.sessionId && cur.target), changes: !!cur.sessionId };
@@ -799,9 +800,44 @@ function openNew() {
 function fillNewHost(resetCwd) {
   const node = $("#newHost").value; const cwds = (node ? nodeOf(node)?.data?.cwds : data.cwds) || [];
   $("#cwdList").innerHTML = cwds.map((c) => `<option value="${esc(c)}">`).join("");
-  if (resetCwd || !$("#newCwd").value) $("#newCwd").value = cwds[0] || "";
+  if (resetCwd) $("#newCwd").value = "";
   $("#newProfileRow").hidden = !multiAccount(node); $("#newProfile").innerHTML = acctOptions($("#newProfile").value || "default", node);
+  loadProjects();
 }
+// Project picker: the folder decides which CLAUDE.md layers and auto-memory the session loads, so show them.
+let newProj = { list: [] }, memTimer = null;
+async function loadProjects() {
+  const node = $("#newHost").value, prof = $("#newProfile").value || "default", list = $("#newProjList");
+  list.innerHTML = `<div class="empty">loading…</div>`;
+  try { newProj = { list: (await api(`${nb(node)}/api/projects?profile=${encodeURIComponent(prof)}`)).projects || [] }; }
+  catch (e) { newProj = { list: [] }; list.innerHTML = `<div class="empty">${esc(e.message)}</div>`; return; }
+  if (!$("#newCwd").value && newProj.list[0]) $("#newCwd").value = newProj.list[0].path;
+  renderProjects(); loadMemory();
+}
+function renderProjects() {
+  const q = $("#newProjFilter").value.trim().toLowerCase(), cwd = $("#newCwd").value.trim();
+  const rows = newProj.list.filter((x) => !q || x.path.toLowerCase().includes(q));
+  $("#newProjList").innerHTML = rows.map((x) => `<button type="button" class="pj ${x.path === cwd ? "on" : ""}" data-p="${esc(x.path)}"><b>${esc(x.name)}</b><span class="pjp">${esc(short(x.path))}</span>${x.src === "recent" ? `<span class="pb rc">recent</span>` : ""}${x.claudeMd ? `<span class="pb md" title="has its own CLAUDE.md">CLAUDE.md</span>` : ""}${x.git ? `<span class="pb">git</span>` : ""}${x.trust === "no" ? `<span class="pb warn" title="not trusted yet">untrusted</span>` : ""}</button>`).join("")
+    || `<div class="empty">no match: type the folder below</div>`;
+  $("#newProjList").querySelectorAll(".pj").forEach((b) => (b.onclick = () => { $("#newCwd").value = b.dataset.p; renderProjects(); loadMemory(); }));
+}
+async function loadMemory() {
+  const node = $("#newHost").value, prof = $("#newProfile").value || "default", dir = $("#newCwd").value.trim().replace(/\/+$/, ""), el = $("#newMem");
+  if (!dir) { el.innerHTML = ""; return; }
+  try {
+    const m = await api(`${nb(node)}/api/memory?profile=${encodeURIComponent(prof)}&dir=${encodeURIComponent(dir)}`);
+    if (dir !== $("#newCwd").value.trim().replace(/\/+$/, "")) return;
+    const kb = (b) => (b >= 1024 ? `${Math.round(b / 1024)} KB` : `${b} B`);
+    el.innerHTML = `<div class="mm-h">Memory this session loads, top to bottom</div>` +
+      m.layers.map((l) => `<div class="ml"><span class="mlk">${esc(l.label)}</span><span class="mlp">${pathHtml(l.path)}</span><span class="mls">${kb(l.bytes)}</span>${l.note ? `<div class="mln">${esc(l.note)}</div>` : ""}</div>`).join("") +
+      (m.layers.length ? "" : `<div class="mln">no CLAUDE.md or memory files for this folder</div>`) +
+      (m.trust === "no" ? `<div class="mtrust">⚠ Not trusted yet: a background session can't start here until Claude Code trusts this folder. <button type="button" id="trustBtn">Open Claude here to trust it</button></div>` : "");
+    if ($("#trustBtn")) $("#trustBtn").onclick = () => { $("#newDlg").close("cancel"); location.hash = `#/here/${encodeURIComponent(prof + ":" + dir)}${node ? "/" + node : ""}`; };
+  } catch (e) { el.innerHTML = `<div class="mtrust">${esc(e.message)}</div>`; }
+}
+$("#newProfile").onchange = loadProjects;
+$("#newProjFilter").addEventListener("input", renderProjects);
+$("#newCwd").addEventListener("input", () => { renderProjects(); clearTimeout(memTimer); memTimer = setTimeout(loadMemory, 400); });
 $("#newHost").onchange = () => fillNewHost(true);
 $("#newBtn").onclick = openNew;
 $("#newPrompt").addEventListener("keydown", (e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); $("#newDlg").close("ok"); } });

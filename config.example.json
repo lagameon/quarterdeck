@@ -12,5 +12,6 @@
   "telegram": null,
   "nodeId": "studio",
   "nodeLabel": "Studio",
-  "nodes": []
+  "nodes": [],
+  "projectRoots": ["~/Projects"]
 }

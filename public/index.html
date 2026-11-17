@@ -63,9 +63,12 @@
   <form method="dialog" id="newForm">
     <h3>New background session</h3>
     <label id="newHostRow" hidden>Machine<select id="newHost"></select></label>
-    <label>Directory<input id="newCwd" list="cwdList" required></label>
-    <datalist id="cwdList"></datalist>
     <label id="newProfileRow" hidden>Account<select id="newProfile"></select></label>
+    <div class="flabel">Project</div>
+    <div id="newProjWrap"><input id="newProjFilter" placeholder="Filter projects…" autocomplete="off"><div id="newProjList"></div></div>
+    <label>Folder<input id="newCwd" list="cwdList" required autocomplete="off"></label>
+    <datalist id="cwdList"></datalist>
+    <div id="newMem"></div>
     <label>Name (optional)<input id="newName"></label>
     <label>Prompt<textarea id="newPrompt" rows="5" required></textarea></label>
     <label>Permission mode

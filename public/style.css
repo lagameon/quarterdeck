@@ -333,3 +333,24 @@ details.unchanged > summary { color: var(--dim); font-size: 13px; cursor: pointe
 .si .hn { flex: none; font-size: 10px; color: #8fb8e8; border: 1px solid #2c3b5a; border-radius: 5px; padding: 0 4px; }
 .hint.warn { background: #241f12; border-color: #5a4a22; margin-bottom: 8px; }
 .hint.warn small { color: var(--dim); }
+
+/* new session: project picker + memory layers */
+.flabel { font-size: 13px; color: var(--dim); margin-bottom: 4px; }
+#newProjWrap { border: 1px solid var(--line); border-radius: 8px; margin-bottom: 10px; overflow: hidden; }
+#newProjFilter { border: none; border-bottom: 1px solid var(--line); border-radius: 0; font-size: 13px; padding: 6px 10px; }
+#newProjList { max-height: 190px; overflow-y: auto; }
+.pj { display: flex; gap: 6px; align-items: baseline; width: 100%; text-align: left; border: none; border-radius: 0; background: none; padding: 6px 10px; font-size: 13px; }
+.pj:hover { background: var(--panel2); } .pj.on { background: #22304a; }
+.pj b { font-weight: 600; flex: none; }
+.pj .pjp { color: var(--dim); font-size: 11.5px; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pb { flex: none; font-size: 10px; color: var(--dim); border: 1px solid var(--line); border-radius: 5px; padding: 0 4px; }
+.pb.md { color: #8fb8e8; border-color: #2c3b5a; } .pb.rc { color: var(--accent2); } .pb.warn { color: var(--warn); border-color: #5a4a22; }
+#newMem { margin: -4px 0 12px; font-size: 12px; }
+#newMem .mm-h { color: var(--dim); margin-bottom: 4px; }
+#newMem .ml { display: flex; flex-wrap: wrap; gap: 0 8px; align-items: baseline; padding: 3px 0; border-left: 2px solid #2c3b5a; padding-left: 8px; margin-bottom: 2px; }
+#newMem .mlk { color: #8fb8e8; flex: none; min-width: 6.5em; }
+#newMem .mlp { flex: 1; min-width: 0; overflow: hidden; } #newMem .mlp .pp { max-width: 100%; }
+#newMem .mls { color: var(--dim); flex: none; font-variant-numeric: tabular-nums; }
+#newMem .mln { width: 100%; color: var(--dim); font-size: 11px; }
+#newMem .mtrust { margin-top: 6px; color: var(--warn); }
+#newMem .mtrust button { margin-top: 4px; font-size: 12px; }

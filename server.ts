@@ -427,8 +427,76 @@ class Pty {
 }
 const ptys = new Map<string, Pty>();
 
+// ───────────────────────────── projects: where a session starts, and what memory it loads ─────────────────────────────
+// Claude Code loads CLAUDE.md from the session's folder and every folder above it (plus the global one and that
+// folder's auto-memory), so picking the folder picks the memory. Folders come from "projectRoots" in config.json
+// (default ~/Projects, else ~): children that look like projects, plus trusted and recently used folders.
+const PROJECT_MARKERS = ["CLAUDE.md", ".git", "AGENTS.md", "package.json", "pyproject.toml", "setup.py", "requirements.txt", "Cargo.toml", "go.mod", "Makefile"];
+const expandHome = (d: string) => d.replace(/^~(?=\/|$)/, HOME).replace(/\/+$/, "") || "/";
+// macOS privacy-protected folders: touching them from a login service pops an "allow access?" dialog on that
+// machine's screen and the call blocks until someone answers it (seen: the whole server hung). Never touch them.
+const TCC_DIRS = process.platform === "darwin" ? [...["Documents", "Desktop", "Downloads", "Library", "Pictures", "Movies", "Music"].map((x) => join(HOME, x)), "/Volumes"] : [];
+const tccProtected = (dir: string) => TCC_DIRS.some((t) => dir === t || dir.startsWith(t + "/"));
+function projectDirOk(dir: string): boolean {
+  if (!dir.startsWith("/") || dir.includes("\0") || tccProtected(dir)) return false;
+  try { const r = realpathSync(dir); return statSync(r).isDirectory() && r.startsWith(HOME + "/"); } catch { return false; }
+}
+let trustCache: { at: number; key: string; dirs: string[] } = { at: 0, key: "", dirs: [] };
+function trustedDirs(prof: Profile): string[] {
+  const f = prof.isDefault ? join(HOME, ".claude.json") : join(prof.dir, ".claude.json");
+  if (trustCache.key === f && Date.now() - trustCache.at < 10_000) return trustCache.dirs;
+  const pr = readJson(f)?.projects || {};
+  const dirs = Object.keys(pr).filter((k) => pr[k]?.hasTrustDialogAccepted);
+  trustCache = { at: Date.now(), key: f, dirs }; return dirs;
+}
+// Trust covers a folder and its subfolders; the home folder itself never counts (Claude trusts it one session at a time).
+const trustOf = (dir: string, t: string[]) => (t.includes(dir) && dir !== HOME ? "yes" : t.some((x) => x !== HOME && dir.startsWith(x + "/")) ? "parent" : "no");
+function listProjects(prof: Profile, recent: string[]) {
+  const conf = readJson(join(CONF_DIR, "config.json")) || {};
+  const roots = (Array.isArray(conf.projectRoots) ? conf.projectRoots : existsSync(join(HOME, "Projects")) ? ["~/Projects"] : ["~"]).map((r: string) => expandHome(String(r)));
+  const trusted = trustedDirs(prof); const out = new Map<string, any>();
+  const add = (d0: string, src: string) => {
+    if (tccProtected(d0)) return;
+    let dir = ""; try { dir = realpathSync.native(d0); } catch { return; } // one entry per real folder (macOS ignores case)
+    if (out.has(dir) || dir === HOME || !projectDirOk(dir)) return;
+    out.set(dir, { path: dir, name: basename(dir), src, git: existsSync(join(dir, ".git")), claudeMd: existsSync(join(dir, "CLAUDE.md")), trust: trustOf(dir, trusted) });
+  };
+  recent.forEach((d) => add(d, "recent"));
+  for (const root of roots) {
+    let names: string[] = []; try { names = readdirSync(root); } catch { continue; }
+    for (const n of names.sort((a, b) => a.localeCompare(b))) {
+      if (n.startsWith(".") || n === "node_modules") continue;
+      const d = join(root, n); if (PROJECT_MARKERS.some((m) => existsSync(join(d, m)))) add(d, "root");
+    }
+  }
+  trusted.filter((t) => t.startsWith(HOME + "/")).sort().forEach((t) => add(t, "trusted"));
+  return [...out.values()].slice(0, 200);
+}
+function memoryLayers(dir: string, prof: Profile) {
+  const layers: { label: string; path: string; bytes: number; note?: string }[] = [];
+  const short = (x: string) => x.replace(HOME, "~");
+  const file = (f: string, label: string, note?: string) => { try { const st = statSync(f); if (st.isFile()) layers.push({ label, path: short(f), bytes: st.size, note }); } catch {} };
+  const countMd = (d: string): [number, number] => { let n = 0, b = 0; const walk = (x: string, depth: number) => { let es: string[] = []; try { es = readdirSync(x); } catch { return; } for (const e of es) { const q = join(x, e); try { const st = statSync(q); if (st.isDirectory() && depth < 4) walk(q, depth + 1); else if (e.endsWith(".md")) { n++; b += st.size; } } catch {} } }; walk(d, 0); return [n, b]; };
+  file(join(prof.dir, "CLAUDE.md"), "global");
+  { const [n, b] = countMd(join(prof.dir, "rules")); if (n) layers.push({ label: "global rules", path: short(join(prof.dir, "rules")) + "/", bytes: b, note: `${n} rule files` }); }
+  const chain: string[] = []; for (let d = dir; ; d = join(d, "..")) { chain.unshift(d); if (d === "/" || chain.length > 30) break; }
+  for (const d of chain) {
+    const label = d === dir ? "this folder" : "parent";
+    file(join(d, "CLAUDE.md"), label); if (d !== HOME) file(join(d, ".claude", "CLAUDE.md"), label); file(join(d, "CLAUDE.local.md"), label, "personal, not in git");
+    if (d !== HOME) { const [n, b] = countMd(join(d, ".claude", "rules")); if (n) layers.push({ label: label + " rules", path: short(join(d, ".claude", "rules")) + "/", bytes: b, note: `${n} rule files (some load only for matching paths)` }); }
+  }
+  const mem = join(prof.dir, "projects", dir.replace(/[^a-zA-Z0-9]/g, "-"), "memory");
+  try { const idx = readFileSync(join(mem, "MEMORY.md"), "utf8"); layers.push({ label: "auto-memory", path: short(join(mem, "MEMORY.md")), bytes: idx.length, note: `${idx.split("\n").filter((l) => l.trim()).length} index lines · ${readdirSync(mem).filter((x) => x.endsWith(".md")).length - 1} topic files` }); } catch {}
+  return { dir, trust: trustOf(dir, trustedDirs(prof)), layers };
+}
+
 function targetCommand(key: string): { cmd: string[]; cwd: string; env?: Record<string, string> } | null {
   const [kind, ...rest] = key.split(":"); const arg = rest.join(":");
+  if (kind === "here") { // an interactive Claude in a project folder, e.g. to answer its trust question from a phone
+    const i = arg.indexOf(":"); const prof = profileById(arg.slice(0, i)); const dir = arg.slice(i + 1);
+    if (!prof || !projectDirOk(dir)) return null;
+    return { cmd: [CLAUDE_BIN], cwd: dir, env: profileEnv(prof) };
+  }
   if (kind === "job") {
     if (!/^[0-9a-f]{6,12}$/.test(arg)) return null;
     const prof = profileOfJob(arg);
@@ -814,6 +882,17 @@ async function handle(req: Request, server: any): Promise<Response | undefined> 
   if (path.startsWith("/api/")) {
     if (req.method !== "GET" && !sameOrigin(req)) return json({ error: "bad origin" }, 403);
     if (path === "/api/fleet") return json(fleetStatus());
+    if (path === "/api/projects") {
+      const prof = profileById(url.searchParams.get("profile") || "default"); if (!prof) return json({ error: "unknown account" }, 400);
+      const jobs = listJobs(); const tr = listTranscripts(40, new Set(jobs.map((j) => j.sessionId)));
+      const recent = [...new Set([...jobs.map((j) => j.cwd), ...tr.map((t) => t.cwd)].filter(Boolean))].slice(0, 12);
+      return json({ projects: listProjects(prof, recent), home: HOME });
+    }
+    if (path === "/api/memory") {
+      const prof = profileById(url.searchParams.get("profile") || "default"); const dir = (url.searchParams.get("dir") || "").replace(/\/+$/, "");
+      if (!prof || !projectDirOk(dir)) return json({ error: tccProtected(dir) ? "macOS protects this folder (Documents, Desktop, Downloads…); Quarterdeck does not open it" : "not a folder under your home folder" }, 400);
+      return json(memoryLayers(dir, prof));
+    }
     if (path === "/api/sessions") {
       const jobs = listJobs();
       const jobSids = new Set(jobs.map((j) => j.sessionId));
