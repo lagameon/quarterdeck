@@ -169,7 +169,7 @@ function allItems() {
   const order = { blocked: 0, working: 1 };
   const jobs = [...data.jobs].sort((a, b) => (order[jobState(a)] ?? 2) - (order[jobState(b)] ?? 2));
   return [
-    ...jobs.map((j) => ({ href: hrefOf("job", j.id, j.node), node: j.node, group: jobState(j) === "blocked" ? "Needs you" : jobState(j) === "working" ? "Running" : "Finished", cls: jobState(j), name: j.name, sub: isBlocked(j) ? needsText(j.needs) || j.detail : j.detail, age: j.updatedAt, key: `${j.name} ${j.id} ${j.detail} ${j.cwd} ${hostLabel(j.node)}` })),
+    ...jobs.map((j) => ({ href: hrefOf("job", j.id, j.node), node: j.node, cwd: j.cwd, group: jobState(j) === "blocked" ? "Needs you" : jobState(j) === "working" ? "Running" : "Finished", cls: jobState(j), name: j.name, sub: isBlocked(j) ? needsText(j.needs) || j.detail : j.detail, age: j.updatedAt, key: `${j.name} ${j.id} ${j.detail} ${j.cwd} ${hostLabel(j.node)}` })),
     ...data.transcripts.map((t) => ({ href: hrefOf("t", t.sessionId, t.node), node: t.node, group: "Interactive", cls: "", name: t.title, sub: t.lastPrompt, age: t.mtime, key: `${t.title} ${t.lastPrompt} ${t.cwd} ${hostLabel(t.node)}` })),
     ...data.tmux.map((s) => ({ href: hrefOf("tmux", s.name, s.node), node: s.node, group: "tmux", cls: "", name: `tmux: ${s.name}`, sub: `${s.command} · ${short(s.path)}`, age: s.activity, key: `tmux ${s.name} ${s.path}` })),
     { href: "#/shell", group: "tmux", cls: "", name: "shell (tmux quarterdeck)", sub: "persistent shell", age: "", key: "shell Quarterdeck" },
@@ -181,15 +181,48 @@ function itemHtml(it, extra = "") {
 }
 function match(it, q) { return !q || q.toLowerCase().split(/\s+/).every((w) => it.key.toLowerCase().includes(w) || it.name.toLowerCase().includes(w)); }
 
+// ───────────── finished sessions grouped by project (= folder on a machine) ─────────────
+const projKey = (x) => `${x.node || ""}|${x.cwd || ""}`;
+const projName = (cwd) => (cwd || "").replace(/\/+$/, "").split("/").pop() || "~";
+function groupByProject(list, timeOf) {
+  const m = new Map();
+  for (const x of list) {
+    const k = projKey(x); if (!m.has(k)) m.set(k, { k, node: x.node, cwd: x.cwd, items: [], last: 0 });
+    const g = m.get(k); g.items.push(x); g.last = Math.max(g.last, timeOf(x));
+  }
+  return [...m.values()].sort((a, b) => b.last - a.last);
+}
+// Open/closed per group is remembered (shared by dashboard and sidebar); unset → the two most recent are open.
+const grpOpen = (k, i) => { const v = store.get(`grp:${k}`); return v === null ? i < 2 : v === "1"; };
+const rememberGroups = (root, sel, when = () => true) => root.querySelectorAll(sel).forEach((d) => d.addEventListener("toggle", () => { if (when()) store.set(`grp:${d.dataset.g}`, d.open ? "1" : "0"); }));
+function finishedSection(list) {
+  const groups = groupByProject(list, (j) => Date.parse(j.updatedAt) || 0);
+  const body = groups.map((g, i) => {
+    const all = showAll[`g:${g.k}`], shown = all ? g.items : g.items.slice(0, 5);
+    return `<details class="grp" data-g="${esc(g.k)}" ${grpOpen(g.k, i) ? "open" : ""}><summary><span class="gname">${esc(projName(g.cwd))}</span>${hostChip(g.node)}<span class="gpath">${esc(short(g.cwd))}</span><span class="gcount">${g.items.length}</span><span class="age">${ago(g.last)}</span></summary>` +
+      shown.map((j) => jobCard(j, { stateChip: true, inGroup: true })).join("") +
+      (!all && g.items.length > 5 ? `<button class="more" data-more="g:${esc(g.k)}">show ${g.items.length - 5} more</button>` : "") + `</details>`;
+  }).join("") || `<div class="empty">none</div>`;
+  return `<div><h2>Finished background sessions<span class="count">${list.length}</span></h2>${body}</div>`;
+}
 function renderSide() {
   const side = $("#side"); if (side.hidden) return;
   const q = $("#sideFilter").value.trim(); const here = location.hash;
+  const items = allItems().filter((i) => match(i, q)); const fin = items.filter((i) => i.group === "Finished");
   let html = "", group = "";
-  for (const it of allItems().filter((i) => match(i, q))) {
+  for (const it of items) {
+    if (it.group === "Finished") {
+      if (group === "Finished") continue; group = "Finished";
+      html += `<div class="sg">Finished<span class="sgc">${fin.length}</span></div>` + groupByProject(fin, (x) => Date.parse(x.age) || 0).map((g, i) =>
+        `<details class="sgrp" data-g="${esc(g.k)}" ${q || grpOpen(g.k, i) || g.items.some((x) => x.href === here) ? "open" : ""}><summary><span class="sgn">${esc(projName(g.cwd))}</span>${multiHost() ? `<span class="hn">${esc(hostLabel(g.node))}</span>` : ""}<span class="sgc">${g.items.length}</span></summary>` +
+        g.items.map((x) => itemHtml({ ...x, node: undefined }, x.href === here ? "on" : "")).join("") + `</details>`).join("");
+      continue;
+    }
     if (it.group !== group) { group = it.group; html += `<div class="sg">${esc(group)}</div>`; }
     html += itemHtml(it, it.href === here ? "on" : "");
   }
   const el = $("#sideList"); const y = el.scrollTop; el.innerHTML = html; el.scrollTop = y;
+  rememberGroups(el, "details.sgrp", () => !$("#sideFilter").value.trim()); // a filter opens everything; don't remember that
 }
 $("#sideFilter").addEventListener("input", renderSide);
 
@@ -206,7 +239,7 @@ function jobCard(j, opt = {}) {
   const chip = opt.stateChip && st !== "done" ? `<span class="chip ${st}">${esc(st)}</span>` : "";
   return `<a class="card ${st}" href="${hrefOf("job", j.id, j.node)}">
     <div class="l1"><span class="name">${esc(j.name)}</span><span class="age">${ago(j.updatedAt)}</span><button class="x" data-rm="${j.id}" data-node="${esc(j.node || "")}" title="Close and remove from the list (transcript is kept)" aria-label="Close session">×</button></div>
-    ${detail}${needs}${res}<div class="l2 lm">${hostChip(j.node)}${acctBadge(j.profile, j.node)}${chip}${esc(short(j.cwd))} · ${esc(j.id)}</div></a>`;
+    ${detail}${needs}${res}<div class="l2 lm">${opt.inGroup ? "" : hostChip(j.node)}${acctBadge(j.profile, j.node)}${chip}${opt.inGroup ? "" : esc(short(j.cwd)) + " · "}${esc(j.id)}</div></a>`;
 }
 const trCard = (t) => `<a class="card" href="${hrefOf("t", t.sessionId, t.node)}"><div class="l1"><span class="name">${esc(t.title)}</span><span class="age">${ago(t.mtime)}</span></div><div class="l2">${esc(t.lastPrompt)}</div><div class="l2 lm">${hostChip(t.node)}${esc(short(t.cwd))}</div></a>`;
 const tmuxCard = (s) => `<a class="card" href="${hrefOf("tmux", s.name, s.node)}"><div class="l1"><span class="name">tmux: ${esc(s.name)}</span>${s.attached ? `<span class="chip live">${s.attached} attached</span>` : ""}<span class="age">${ago(s.activity)}</span></div><div class="l2 lm">${hostChip(s.node)}${esc(s.command)} · ${esc(short(s.path))} · ${s.windows} win</div></a>`;
@@ -306,7 +339,7 @@ function renderDash() {
     <kbd>⌘K</kbd> switch session · <kbd>Alt+1–4</kbd> switch view · <kbd>Alt+N</kbd> new · <kbd>/</kbd> type a message</div>` : "";
   // What needs you and what is running: left column on wide screens, the very top on phones.
   const top = section("Needs you", blocked, jobCard, { empty: "nothing waiting on you" }) + section("Running", working, jobCard);
-  const others = section("Finished background sessions", rest, (j) => jobCard(j, { stateChip: true }), { limit: 8, key: "done" }) +
+  const others = finishedSection(rest) +
     section("Interactive sessions (resume)", data.transcripts, trCard, { limit: 8, key: "tr" }) +
     section("tmux", data.tmux, tmuxCard, { empty: "no tmux sessions" }) +
     `<p><button id="shellBtn">Open shell (tmux “quarterdeck”)</button></p>`;
@@ -317,6 +350,7 @@ function renderDash() {
   el.querySelectorAll("[data-more]").forEach((b) => (b.onclick = () => { showAll[b.dataset.more] = true; renderDash(); }));
   $("#shellBtn").onclick = () => (location.hash = "#/shell");
   $("#dash").querySelectorAll("#dashTop [data-rm], #dashBody [data-rm]").forEach((b) => (b.onclick = (e) => { e.preventDefault(); e.stopPropagation(); removeJob(b.dataset.rm, b.dataset.node || ""); }));
+  rememberGroups($("#dash"), "details.grp");
   el.querySelector(".hint .hx")?.addEventListener("click", () => { store.set("hintHidden", "1"); renderDash(); });
 }
 async function removeJob(id, node = "") {

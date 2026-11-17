@@ -354,3 +354,34 @@ details.unchanged > summary { color: var(--dim); font-size: 13px; cursor: pointe
 #newMem .mln { width: 100%; color: var(--dim); font-size: 11px; }
 #newMem .mtrust { margin-top: 6px; color: var(--warn); }
 #newMem .mtrust button { margin-top: 4px; font-size: 12px; }
+
+/* finished sessions grouped by project */
+details.grp { margin-bottom: 6px; }
+details.grp > summary { list-style: none; cursor: pointer; display: flex; gap: 8px; align-items: center; padding: 7px 6px; border-radius: 8px; }
+details.grp > summary:hover { background: var(--panel); }
+details.grp > summary::-webkit-details-marker, details.sgrp > summary::-webkit-details-marker { display: none; }
+details.grp > summary::before, details.sgrp > summary::before { content: "▸"; color: var(--dim); font-size: 11px; display: inline-block; transition: transform .15s; }
+details.grp[open] > summary::before, details.sgrp[open] > summary::before { transform: rotate(90deg); }
+details.grp[open] > summary { margin-bottom: 6px; }
+.grp .gname { font-weight: 600; flex: none; }
+.grp .gpath { color: var(--dim); font-size: 12px; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.grp .gcount { background: var(--panel2); border-radius: 10px; padding: 0 8px; font-size: 11px; color: var(--dim); flex: none; }
+.grp .age { color: var(--dim); font-size: 12px; flex: none; }
+details.grp > .card, details.grp > .more { margin-left: 14px; }
+details.sgrp > summary { list-style: none; cursor: pointer; display: flex; gap: 6px; align-items: center; font-size: 12.5px; padding: 4px 8px; border-radius: 6px; color: var(--text); }
+details.sgrp > summary:hover { background: var(--panel2); }
+.sgn { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sgc { margin-left: auto; color: var(--dim); font-size: 11px; font-variant-numeric: tabular-nums; flex: none; }
+.sg .sgc { margin-left: 6px; }
+details.sgrp .si { margin-left: 12px; }
+/* scrollbars: thin and quiet, brighter on hover; sidebar headings stay visible while scrolling */
+* { scrollbar-width: thin; scrollbar-color: #2a3140 transparent; }
+*:hover { scrollbar-color: #47526b transparent; }
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-track, ::-webkit-scrollbar-corner { background: transparent; }
+::-webkit-scrollbar-thumb { background-color: #2a3140; border-radius: 8px; border: 2px solid transparent; background-clip: padding-box; }
+::-webkit-scrollbar-thumb:hover { background-color: #47526b; }
+#sideList { overscroll-behavior: contain; mask-image: linear-gradient(to bottom, #000 calc(100% - 22px), transparent); -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - 22px), transparent); }
+#sideList .sg { position: sticky; top: 0; z-index: 1; background: var(--panel); margin: 0; padding: 10px 6px 4px; }
+#keys, #tabs { scrollbar-width: none; } #keys::-webkit-scrollbar, #tabs::-webkit-scrollbar { display: none; }
+@media (max-width: 600px) { details.grp > .card, details.grp > .more { margin-left: 0; } details.grp > summary { padding: 7px 2px; } }
