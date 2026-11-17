@@ -390,3 +390,7 @@ details.sgrp .si { margin-left: 12px; }
 .mrow { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 12px; font-size: 12px; color: var(--dim); background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 6px 10px; }
 .mrow b { color: var(--text); font-weight: 600; min-width: 4.5em; }
 .mrow .warnt { color: var(--warn); }
+/* translated label text inside dialog labels stays a plain label (not styled like the field below it) */
+dialog label > span[data-i18n] { margin: 0; color: inherit; }
+.langrow { font-size: 12px; color: var(--dim); margin: 14px 0 4px; }
+.langrow a { color: var(--accent2); text-decoration: none; } .langrow b { color: var(--text); font-weight: 600; }

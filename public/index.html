@@ -16,25 +16,25 @@
 </head>
 <body>
 <header id="top">
-  <button id="back" class="icon" title="Back to dashboard" hidden>‹</button>
-  <button id="swBtn" title="Switch session (⌘K)" hidden>☰</button>
+  <button id="back" class="icon" title="Back to dashboard" data-i18n-title hidden>‹</button>
+  <button id="swBtn" title="Switch session (⌘K)" data-i18n-title hidden>☰</button>
   <a id="home" href="#" class="brand">Quarterdeck</a>
   <div id="title"><span id="subtitle"></span></div>
   <div id="tabs" hidden>
-    <button data-tab="chat" class="tab" title="Alt+1">Chat</button>
-    <button data-tab="term" class="tab" title="Alt+2">Terminal</button>
-    <button data-tab="split" class="tab wide-only" title="Alt+3">Split</button>
-    <button data-tab="changes" class="tab" title="Alt+4">Changes</button>
+    <button data-tab="chat" class="tab" title="Alt+1" data-i18n>Chat</button>
+    <button data-tab="term" class="tab" title="Alt+2" data-i18n>Terminal</button>
+    <button data-tab="split" class="tab wide-only" title="Alt+3" data-i18n>Split</button>
+    <button data-tab="changes" class="tab" title="Alt+4" data-i18n>Changes</button>
   </div>
   <div class="spacer"></div>
-  <button id="findBtn" title="Switch session (⌘K)">⌘K</button>
-  <button id="notif" class="icon" title="Enable notifications">🔔</button>
-  <button id="newBtn" class="primary" title="New session (Alt+N)">＋ New</button>
+  <button id="findBtn" title="Switch session (⌘K)" data-i18n-title>⌘K</button>
+  <button id="notif" class="icon" title="Enable notifications" data-i18n-title>🔔</button>
+  <button id="newBtn" class="primary" title="New session (Alt+N)" data-i18n data-i18n-title>＋ New</button>
 </header>
 
 <div id="body">
   <aside id="side" hidden>
-    <input id="sideFilter" placeholder="Filter sessions…" autocomplete="off">
+    <input id="sideFilter" placeholder="Filter sessions…" data-i18n-placeholder autocomplete="off">
     <div id="sideList"></div>
   </aside>
 
@@ -45,7 +45,7 @@
     <div id="panes">
       <div id="chat" class="pane">
         <div id="events"></div>
-        <button id="jump" hidden>↓ latest</button>
+        <button id="jump" data-i18n hidden>↓ latest</button>
       </div>
       <div id="term" class="pane" hidden><div id="xterm"></div></div>
       <div id="changes" class="pane" hidden></div>
@@ -54,32 +54,32 @@
     <div id="keys"></div>
     <form id="composer">
       <textarea id="input" rows="1"></textarea>
-      <button id="send" class="primary" type="submit">Send</button>
+      <button id="send" class="primary" type="submit" data-i18n>Send</button>
     </form>
   </section>
 </div>
 
 <dialog id="newDlg">
   <form method="dialog" id="newForm">
-    <h3>New background session</h3>
-    <label id="newHostRow" hidden>Machine<select id="newHost"></select></label>
-    <label id="newProfileRow" hidden>Account<select id="newProfile"></select></label>
-    <div class="flabel">Project</div>
-    <div id="newProjWrap"><input id="newProjFilter" placeholder="Filter projects…" autocomplete="off"><div id="newProjList"></div></div>
-    <label>Folder<input id="newCwd" list="cwdList" required autocomplete="off"></label>
+    <h3 data-i18n>New background session</h3>
+    <label id="newHostRow" hidden><span data-i18n>Machine</span><select id="newHost"></select></label>
+    <label id="newProfileRow" hidden><span data-i18n>Account</span><select id="newProfile"></select></label>
+    <div class="flabel" data-i18n>Project</div>
+    <div id="newProjWrap"><input id="newProjFilter" placeholder="Filter projects…" data-i18n-placeholder autocomplete="off"><div id="newProjList"></div></div>
+    <label><span data-i18n>Folder</span><input id="newCwd" list="cwdList" required autocomplete="off"></label>
     <datalist id="cwdList"></datalist>
     <div id="newMem"></div>
-    <label>Name (optional)<input id="newName"></label>
-    <label>Prompt<textarea id="newPrompt" rows="5" required></textarea></label>
-    <label>Permission mode
+    <label><span data-i18n>Name (optional)</span><input id="newName"></label>
+    <label><span data-i18n>Prompt</span><textarea id="newPrompt" rows="5" required></textarea></label>
+    <label><span data-i18n>Permission mode</span>
       <select id="newMode"><option value="">default</option><option>acceptEdits</option><option>plan</option><option>bypassPermissions</option></select>
     </label>
-    <div class="row"><button value="cancel" formnovalidate>Cancel</button><button value="ok" class="primary">Start</button></div>
+    <div class="row"><button value="cancel" formnovalidate data-i18n>Cancel</button><button value="ok" class="primary" data-i18n>Start</button></div>
   </form>
 </dialog>
 
 <dialog id="findDlg">
-  <input id="findInput" placeholder="Jump to session…  (↑↓ Enter)" autocomplete="off">
+  <input id="findInput" placeholder="Jump to session…  (↑↓ Enter)" data-i18n-placeholder autocomplete="off">
   <div id="findList"></div>
 </dialog>
 

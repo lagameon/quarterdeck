@@ -3,6 +3,7 @@ import { FitAddon } from "/vendor/addon-fit.mjs";
 import { WebLinksAddon } from "/vendor/addon-web-links.mjs";
 import { marked } from "/vendor/marked.mjs";
 import DOMPurify from "/vendor/purify.mjs";
+import { t, setLang, getLang, translateStatic } from "/i18n.js";
 
 const $ = (s) => document.querySelector(s);
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -70,7 +71,7 @@ const acctLabel = (id, node = "") => {
 };
 const acctBadge = (id, node = "") => (multiAccount(node) ? `<span class="chip acct" title="${esc(acctOf(id, node)?.email || id)}">${esc(acctLabel(id, node))}</span>` : "");
 function acctOptions(selected, node = "") {
-  return accountsOf(node).map((a) => `<option value="${esc(a.id)}" ${a.id === selected ? "selected" : ""} ${a.loggedIn ? "" : "disabled"}>${esc(a.email || a.id)}${a.isDefault ? " (default)" : ""}${a.loggedIn ? "" : " — not logged in"}</option>`).join("");
+  return accountsOf(node).map((a) => `<option value="${esc(a.id)}" ${a.id === selected ? "selected" : ""} ${a.loggedIn ? "" : "disabled"}>${esc(a.email || a.id)}${a.isDefault ? ` (${t("default")})` : ""}${a.loggedIn ? "" : ` — ${t("not logged in")}`}</option>`).join("");
 }
 const staleBlocked = (j) => j.tempo === "blocked" || j.state === "blocked" || (j.needs && j.state !== "done");
 // A resumed/attached session keeps state "done" while it generates; only tempo turns "active".
@@ -80,6 +81,7 @@ const jobState = (j) => (j.phase === "working" ? "working" : j.phase === "waitin
 // "Needs you" = the same answer jobState gives: a session state.json still calls blocked while Claude is already
 // answering (transcript says working) is not waiting for you.
 const isBlocked = (j) => jobState(j) === "blocked";
+const stLabel = (st) => t(st); // state chips: working / blocked / done / failed …
 
 // ───────────── plug-ins: optional extra features loaded from the server's config ("plugins") ─────────────
 // A plug-in's browser module registers through window.QD: a block at the top of the dashboard (mounted once,
@@ -87,13 +89,20 @@ const isBlocked = (j) => jobState(j) === "blocked";
 // header, and a refresh function called before the dashboard or its page renders. Its API lives under /api/p/<name>/.
 const plug = { tops: [], pages: {}, jobButtons: [], refresh: [] };
 window.QD = {
-  api, esc, md, toast, ago, short, $, poll: () => poll(),
+  api, esc, md, toast, ago, short, $, t, lang: () => getLang(), poll: () => poll(),
   dashTop: (p) => plug.tops.push(p), page: (name, p) => (plug.pages[name] = p),
   jobButton: (fn) => plug.jobButtons.push(fn), onRefresh: (fn) => plug.refresh.push(fn),
   rerender: () => { const v = route().view; if (v === "list") renderDash(); else if (plug.pages[v]) renderPage(v); else { if ($("#meta")) $("#meta")._sig = ""; refreshMeta(); } },
 };
 const isDashView = (v) => v === "list" || !!plug.pages[v];
 const refreshPlugins = () => Promise.all(plug.refresh.map((f) => Promise.resolve().then(f).catch((e) => console.warn(e))));
+// Language: this device's own choice (the switch at the bottom of the dashboard), else the server's "lang" setting.
+const LANGS = [["en", "English"], ["zh", "中文"]];
+async function initLang() {
+  let l = store.get("lang");
+  if (!l) try { l = (await api("/api/ui")).lang; } catch {}
+  setLang(l || "en"); translateStatic();
+}
 async function loadPluginUi() {
   let list = []; try { list = await api("/api/plugins"); } catch { return; }
   for (const p of list) {
@@ -149,7 +158,7 @@ function notifyTransitions() {
     const was = prevJobState.get(id);
     if (was && was !== st && (st === "blocked" || st === "done")) {
       const j = data.jobs.find((x) => `${x.node}:${x.id}` === id);
-      const msg = st === "blocked" ? `needs you: ${needsText(j.needs) || j.detail}` : `done: ${outText(j.output) || j.detail}`;
+      const msg = st === "blocked" ? `${t("needs you")}: ${needsText(j.needs) || j.detail}` : `${t("done")}: ${outText(j.output) || j.detail}`;
       // System notifications now come from the server (Web Push), so only an in-page toast here.
       const h = hrefOf("job", j.id, j.node);
       if (location.hash !== h) toast(`${multiHost() ? `[${hostLabel(j.node)}] ` : ""}${j.name} — ${msg}`, 8000, { href: h, kind: st }); // already looking at it → no toast
@@ -165,26 +174,26 @@ async function pushState() {
   const reg = await navigator.serviceWorker.getRegistration(); const sub = await reg?.pushManager.getSubscription();
   return sub ? "on" : "off";
 }
-async function refreshBell() { const st = await pushState().catch(() => "off"); $("#notif").textContent = st === "on" ? "🔔" : "🔕"; $("#notif").title = st === "on" ? "Push on for this device — click to send a test" : "Enable push notifications on this device"; }
+async function refreshBell() { const st = await pushState().catch(() => "off"); $("#notif").textContent = st === "on" ? "🔔" : "🔕"; $("#notif").title = st === "on" ? t("Push on for this device — click to send a test") : t("Enable push notifications on this device"); }
 $("#notif").onclick = async () => {
   try {
     if (!window.isSecureContext) {
       const ios = /iPhone|iPad/.test(navigator.userAgent);
-      return toast(ios ? "Push needs the HTTPS address, opened from the Home Screen app (see README)" : "Push needs HTTPS or localhost (see README)", 6000);
+      return toast(ios ? t("Push needs the HTTPS address, opened from the Home Screen app (see README)") : t("Push needs HTTPS or localhost (see README)"), 6000);
     }
-    if (!("PushManager" in window)) return toast("This browser has no Web Push. On iPhone: Share → Add to Home Screen, then open Quarterdeck from the Home Screen.", 7000);
+    if (!("PushManager" in window)) return toast(t("This browser has no Web Push. On iPhone: Share → Add to Home Screen, then open Quarterdeck from the Home Screen."), 7000);
     const reg = await navigator.serviceWorker.register("/sw.js"); await navigator.serviceWorker.ready;
     let sub = await reg.pushManager.getSubscription();
     if (!sub) {
-      if ((await Notification.requestPermission()) !== "granted") return toast("Notifications were not allowed");
+      if ((await Notification.requestPermission()) !== "granted") return toast(t("Notifications were not allowed"));
       const { publicKey } = await api("/api/push/key");
       sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: b64ToU8(publicKey) });
       const label = `${/iPhone/.test(navigator.userAgent) ? "iPhone" : /iPad/.test(navigator.userAgent) ? "iPad" : /Mac/.test(navigator.userAgent) ? "Mac" : "device"} · ${navigator.userAgent.match(/(Chrome|Safari|Firefox|Edg)\/[\d.]+/)?.[0] || ""}`;
       await api("/api/push/subscribe", { subscription: sub.toJSON(), label });
     }
     const r = await api("/api/push/test", {});
-    toast(`Test sent to ${r.push} device(s)${r.telegram === null ? "" : `, Telegram ${r.telegram ? "ok" : "failed"}`}`, 4000);
-  } catch (e) { toast(`Push setup failed: ${e.message}`, 6000); }
+    toast(`${t("Test sent to {n} device(s)", { n: r.push })}${r.telegram === null ? "" : `, Telegram ${r.telegram ? "ok" : "failed"}`}`, 4000);
+  } catch (e) { toast(t("Push setup failed: {e}", { e: e.message }), 6000); }
   refreshBell();
 };
 
@@ -196,8 +205,8 @@ function allItems() {
     ...jobs.map((j) => ({ href: hrefOf("job", j.id, j.node), node: j.node, cwd: j.cwd, group: jobState(j) === "blocked" ? "Needs you" : jobState(j) === "working" ? "Running" : "Finished", cls: jobState(j), name: j.name, sub: isBlocked(j) ? needsText(j.needs) || j.detail : j.detail, age: j.updatedAt, key: `${j.name} ${j.id} ${j.detail} ${j.cwd} ${hostLabel(j.node)}` })),
     ...data.transcripts.map((t) => ({ href: hrefOf("t", t.sessionId, t.node), node: t.node, group: "Interactive", cls: "", name: t.title, sub: t.lastPrompt, age: t.mtime, key: `${t.title} ${t.lastPrompt} ${t.cwd} ${hostLabel(t.node)}` })),
     ...data.tmux.map((s) => ({ href: hrefOf("tmux", s.name, s.node), node: s.node, group: "tmux", cls: "", name: `tmux: ${s.name}`, sub: `${s.command} · ${short(s.path)}`, age: s.activity, key: `tmux ${s.name} ${s.path}` })),
-    { href: "#/shell", group: "tmux", cls: "", name: "shell (tmux quarterdeck)", sub: "persistent shell", age: "", key: "shell Quarterdeck" },
-    ...(fleet.nodes || []).filter((n) => n.online).map((n) => ({ href: `#/shell/main/${n.id}`, node: n.id, group: "tmux", cls: "", name: `shell on ${n.label}`, sub: "persistent shell (tmux)", age: "", key: `shell ${n.label}` })),
+    { href: "#/shell", group: "tmux", cls: "", name: "shell (tmux quarterdeck)", sub: t("persistent shell"), age: "", key: "shell Quarterdeck" },
+    ...(fleet.nodes || []).filter((n) => n.online).map((n) => ({ href: `#/shell/main/${n.id}`, node: n.id, group: "tmux", cls: "", name: t("shell on {m}", { m: n.label }), sub: t("persistent shell (tmux)"), age: "", key: `shell ${n.label}` })),
   ];
 }
 function itemHtml(it, extra = "") {
@@ -225,9 +234,9 @@ function finishedSection(list) {
     const all = showAll[`g:${g.k}`], shown = all ? g.items : g.items.slice(0, 5);
     return `<details class="grp" data-g="${esc(g.k)}" ${grpOpen(g.k, i) ? "open" : ""}><summary><span class="gname">${esc(projName(g.cwd))}</span>${hostChip(g.node)}<span class="gpath">${esc(short(g.cwd))}</span><span class="gcount">${g.items.length}</span><span class="age">${ago(g.last)}</span></summary>` +
       shown.map((j) => jobCard(j, { stateChip: true, inGroup: true })).join("") +
-      (!all && g.items.length > 5 ? `<button class="more" data-more="g:${esc(g.k)}">show ${g.items.length - 5} more</button>` : "") + `</details>`;
-  }).join("") || `<div class="empty">none</div>`;
-  return `<div><h2>Finished background sessions<span class="count">${list.length}</span></h2>${body}</div>`;
+      (!all && g.items.length > 5 ? `<button class="more" data-more="g:${esc(g.k)}">${t("show {n} more", { n: g.items.length - 5 })}</button>` : "") + `</details>`;
+  }).join("") || `<div class="empty">${t("none")}</div>`;
+  return `<div><h2>${t("Finished background sessions")}<span class="count">${list.length}</span></h2>${body}</div>`;
 }
 function renderSide() {
   const side = $("#side"); if (side.hidden) return;
@@ -237,12 +246,12 @@ function renderSide() {
   for (const it of items) {
     if (it.group === "Finished") {
       if (group === "Finished") continue; group = "Finished";
-      html += `<div class="sg">Finished<span class="sgc">${fin.length}</span></div>` + groupByProject(fin, (x) => Date.parse(x.age) || 0).map((g, i) =>
+      html += `<div class="sg">${t("Finished")}<span class="sgc">${fin.length}</span></div>` + groupByProject(fin, (x) => Date.parse(x.age) || 0).map((g, i) =>
         `<details class="sgrp" data-g="${esc(g.k)}" ${q || grpOpen(g.k, i) || g.items.some((x) => x.href === here) ? "open" : ""}><summary><span class="sgn">${esc(projName(g.cwd))}</span>${multiHost() ? `<span class="hn">${esc(hostLabel(g.node))}</span>` : ""}<span class="sgc">${g.items.length}</span></summary>` +
         g.items.map((x) => itemHtml({ ...x, node: undefined }, x.href === here ? "on" : "")).join("") + `</details>`).join("");
       continue;
     }
-    if (it.group !== group) { group = it.group; html += `<div class="sg">${esc(group)}</div>`; }
+    if (it.group !== group) { group = it.group; html += `<div class="sg">${esc(t(group))}</div>`; }
     html += itemHtml(it, it.href === here ? "on" : "");
   }
   const el = $("#sideList"); const y = el.scrollTop; el.innerHTML = html; el.scrollTop = y;
@@ -260,17 +269,17 @@ function jobCard(j, opt = {}) {
   const dup = (nt && nt === j.detail) || (j.state === "done" && ot && (ot.startsWith(j.detail) || j.detail.startsWith(ot.slice(0, 40))));
   const detail = dup ? "" : `<div class="l2">${esc(j.detail || j.intent)}</div>`;
   // The section heading already says the state; only an unusual one (failed, stopped…) gets a chip.
-  const chip = opt.stateChip && st !== "done" ? `<span class="chip ${st}">${esc(st)}</span>` : "";
+  const chip = opt.stateChip && st !== "done" ? `<span class="chip ${st}">${esc(stLabel(st))}</span>` : "";
   return `<a class="card ${st}" href="${hrefOf("job", j.id, j.node)}">
-    <div class="l1"><span class="name">${esc(j.name)}</span><span class="age">${ago(j.updatedAt)}</span><button class="x" data-rm="${j.id}" data-node="${esc(j.node || "")}" title="Close and remove from the list (transcript is kept)" aria-label="Close session">×</button></div>
+    <div class="l1"><span class="name">${esc(j.name)}</span><span class="age">${ago(j.updatedAt)}</span><button class="x" data-rm="${j.id}" data-node="${esc(j.node || "")}" title="${t("Close and remove from the list (transcript is kept)")}" aria-label="${t("Close session")}">×</button></div>
     ${detail}${needs}${res}<div class="l2 lm">${opt.inGroup ? "" : hostChip(j.node)}${acctBadge(j.profile, j.node)}${chip}${opt.inGroup ? "" : esc(short(j.cwd)) + " · "}${esc(j.id)}</div></a>`;
 }
 const trCard = (t) => `<a class="card" href="${hrefOf("t", t.sessionId, t.node)}"><div class="l1"><span class="name">${esc(t.title)}</span><span class="age">${ago(t.mtime)}</span></div><div class="l2">${esc(t.lastPrompt)}</div><div class="l2 lm">${hostChip(t.node)}${esc(short(t.cwd))}</div></a>`;
-const tmuxCard = (s) => `<a class="card" href="${hrefOf("tmux", s.name, s.node)}"><div class="l1"><span class="name">tmux: ${esc(s.name)}</span>${s.attached ? `<span class="chip live">${s.attached} attached</span>` : ""}<span class="age">${ago(s.activity)}</span></div><div class="l2 lm">${hostChip(s.node)}${esc(s.command)} · ${esc(short(s.path))} · ${s.windows} win</div></a>`;
+const tmuxCard = (s) => `<a class="card" href="${hrefOf("tmux", s.name, s.node)}"><div class="l1"><span class="name">tmux: ${esc(s.name)}</span>${s.attached ? `<span class="chip live">${t("{n} attached", { n: s.attached })}</span>` : ""}<span class="age">${ago(s.activity)}</span></div><div class="l2 lm">${hostChip(s.node)}${esc(s.command)} · ${esc(short(s.path))} · ${t("{n} win", { n: s.windows })}</div></a>`;
 function section(title, items, render, opt = {}) {
   let list = items, more = "";
-  if (opt.limit && !showAll[opt.key] && items.length > opt.limit) { list = items.slice(0, opt.limit); more = `<button class="more" data-more="${opt.key}">show ${items.length - opt.limit} more</button>`; }
-  const body = list.length ? list.map(render).join("") : `<div class="empty">${opt.empty || "none"}</div>`;
+  if (opt.limit && !showAll[opt.key] && items.length > opt.limit) { list = items.slice(0, opt.limit); more = `<button class="more" data-more="${opt.key}">${t("show {n} more", { n: items.length - opt.limit })}</button>`; }
+  const body = list.length ? list.map(render).join("") : `<div class="empty">${opt.empty || t("none")}</div>`;
   return `<div><h2>${title}<span class="count">${items.length}</span></h2>${body}${more}</div>`;
 }
 // ───────────── overview (today tiles + 14-day charts) ─────────────
@@ -308,8 +317,8 @@ function renderOverview() {
   const jobsNow = { run: data.jobs.filter((j) => jobState(j) === "working").length, wait: data.jobs.filter(isBlocked).length,
     doneToday: data.jobs.filter((j) => j.state === "done" && j.updatedAt && new Date(j.updatedAt).toDateString() === new Date().toDateString()).length };
   const sig = JSON.stringify([st?.updatedAt, st?.quota, jobsNow, wide(), ovOpen(), data.accounts]); if (sig === overviewSig) return; overviewSig = sig;
-  if (!st?.ready) { el.innerHTML = `<div class="empty">building usage stats…</div>`; return; }
-  const t = st.days[st.days.length - 1];
+  if (!st?.ready) { el.innerHTML = `<div class="empty">${t("building usage stats…")}</div>`; return; }
+  const td = st.days[st.days.length - 1];
   const tile = (label, val, sub = "") => `<div class="tile"><div class="tv">${val}</div><div class="tl">${label}</div>${sub ? `<div class="ts2">${sub}</div>` : ""}</div>`;
   // Optional quota tiles (config.quotaUrl). Each account carries its own state: never show a stale number as current.
   const q = st.quota;
@@ -318,38 +327,38 @@ function renderOverview() {
   for (const b of (st.quota?.bars || [])) { b.h = pct(b.h); b.w = pct(b.w); b.ageHours = hrs(b.ageHours); }
   if (st.quota) st.quota.ageHours = hrs(st.quota.ageHours);
   const qBar = (b) => b.state === "ok"
-    ? tile(`Quota ${esc(b.label)} (7d)`, b.w == null ? "–" : `${b.w}%`, (b.h == null ? "no 5-hour limit" : `5-hour window ${b.h}%`) + (b.codex && b.ageHours ? `; snapshot ${b.ageHours}h old` : ""))
+    ? tile(t("Quota {name} (7d)", { name: esc(b.label) }), b.w == null ? "–" : `${b.w}%`, (b.h == null ? t("no 5-hour limit") : t("5-hour window {p}%", { p: b.h })) + (b.codex && b.ageHours ? t("; snapshot {h}h old", { h: b.ageHours }) : ""))
     : b.codex && b.state === "stale"
-    ? tile(`Quota ${esc(b.label)} (7d)`, b.w == null ? "–" : `${b.w}%`, `snapshot ${b.ageHours}h old (updates only when Codex is used)`)
-    : `<div class="tile warn"><div class="tv">⚠</div><div class="tl">Quota ${esc(b.label)}</div><div class="ts2">${esc(b.state === "auth" ? "login expired — sign in to this account again" : b.note || b.state)}${b.ageHours ? `; data is ${b.ageHours}h old` : ""}</div></div>`;
+    ? tile(t("Quota {name} (7d)", { name: esc(b.label) }), b.w == null ? "–" : `${b.w}%`, t("snapshot {h}h old (updates only when Codex is used)", { h: b.ageHours }))
+    : `<div class="tile warn"><div class="tv">⚠</div><div class="tl">${t("Quota {name}", { name: esc(b.label) })}</div><div class="ts2">${esc(b.state === "auth" ? t("login expired — sign in to this account again") : b.note || b.state)}${b.ageHours ? t("; data is {h}h old", { h: b.ageHours }) : ""}</div></div>`;
   const quota = !q ? "" : q.bars.length ? (q.ok ? q.bars.map(qBar).join("")
-      : `<div class="tile warn"><div class="tv">⚠</div><div class="tl">Quota unavailable</div><div class="ts2">data is ${q.ageHours}h old${q.err ? " (collector error)" : ""}; not showing stale numbers</div></div>`)
-    : `<div class="tile warn"><div class="tv">⚠</div><div class="tl">Quota</div><div class="ts2">${esc(q.err || "no data")}</div></div>`;
+      : `<div class="tile warn"><div class="tv">⚠</div><div class="tl">${t("Quota unavailable")}</div><div class="ts2">${t("data is {h}h old", { h: q.ageHours })}${q.err ? t(" (collector error)") : ""}${t("; not showing stale numbers")}</div></div>`)
+    : `<div class="tile warn"><div class="tv">⚠</div><div class="tl">${t("Quota")}</div><div class="ts2">${esc(q.err || t("no data"))}</div></div>`;
   // One tile for all signed-in accounts (one tile each left a lone tile on its own row); a missing login still warns.
   const accts = data.accounts || [], signedIn = accts.filter((a) => a.loggedIn);
-  const acctTiles = !multiAccount() ? "" : (signedIn.length ? `<div class="tile"><div class="tv">${signedIn.length}</div><div class="tl">Accounts</div>${signedIn.map((a) =>
-      `<div class="ts2" title="${esc(a.email || a.id)}">${esc(acctLabel(a.id))}${a.isDefault ? " (default)" : ""}${a.planTier ? " · " + esc(a.planTier) : ""}${a.loginExpiresAt ? " · until " + esc(a.loginExpiresAt.slice(5, 10)) : ""}</div>`).join("")}</div>` : "") +
-    accts.filter((a) => !a.loggedIn).map((a) => `<div class="tile warn"><div class="tv">⚠</div><div class="tl">Account ${esc(a.id)} not logged in</div><div class="ts2">run <code>CLAUDE_CONFIG_DIR=${esc(a.dir)} claude auth login</code></div></div>`).join("");
+  const acctTiles = !multiAccount() ? "" : (signedIn.length ? `<div class="tile"><div class="tv">${signedIn.length}</div><div class="tl">${t("Accounts")}</div>${signedIn.map((a) =>
+      `<div class="ts2" title="${esc(a.email || a.id)}">${esc(acctLabel(a.id))}${a.isDefault ? ` (${t("default")})` : ""}${a.planTier ? " · " + esc(a.planTier) : ""}${a.loginExpiresAt ? t(" · until {d}", { d: esc(a.loginExpiresAt.slice(5, 10)) }) : ""}</div>`).join("")}</div>` : "") +
+    accts.filter((a) => !a.loggedIn).map((a) => `<div class="tile warn"><div class="tv">⚠</div><div class="tl">${t("Account {id} not logged in", { id: esc(a.id) })}</div><div class="ts2">${t("run")} <code>CLAUDE_CONFIG_DIR=${esc(a.dir)} claude auth login</code></div></div>`).join("");
   if (!wide() && !ovOpen()) {
     const qs = (q?.bars || []).filter((b) => b.state === "ok" && b.w != null).map((b) => `${esc(b.label)} ${b.w}%`).join(" · ");
-    el.innerHTML = `<button class="ov-line" id="ovToggle"><span class="ov-car">▸</span><span>Today · ${fmtTok(t.out)} out · ${t.turns} turns · ${jobsNow.doneToday} done${qs ? " · quota " + qs : ""}</span></button>`;
+    el.innerHTML = `<button class="ov-line" id="ovToggle"><span class="ov-car">▸</span><span>${t("Today · {out} out · {turns} turns · {done} done", { out: fmtTok(td.out), turns: td.turns, done: jobsNow.doneToday })}${qs ? t(" · quota {q}", { q: qs }) : ""}</span></button>`;
     $("#ovToggle").onclick = () => { store.set("ovOpen", "1"); overviewSig = ""; renderOverview(); };
     return;
   }
-  const models = Object.entries(t.models || {}).sort((a, b) => b[1] - a[1]).map(([m, v]) => `${esc(m)} ${fmtTok(v)}`).join(" · ");
-  el.innerHTML = `<h2>Today<span class="count">${esc(t.date)}</span><span class="ov-upd">stats updated ${ago(st.updatedAt) === "now" ? "just now" : `${ago(st.updatedAt)} ago`}</span></h2>
+  const models = Object.entries(td.models || {}).sort((a, b) => b[1] - a[1]).map(([m, v]) => `${esc(m)} ${fmtTok(v)}`).join(" · ");
+  el.innerHTML = `<h2>${t("Today")}<span class="count">${esc(td.date)}</span><span class="ov-upd">${ago(st.updatedAt) === "now" ? t("stats updated just now") : t("stats updated {t} ago", { t: ago(st.updatedAt) })}</span></h2>
     <div class="tiles">
-      ${tile("done today", jobsNow.doneToday)}
-      ${tile("active sessions", t.sessions)}${tile("your messages", t.prompts)}${tile("Claude turns", t.turns, `${t.tools} tool calls`)}
-      ${tile("output tokens", fmtTok(t.out), models)}${tile("input tokens", fmtTok(t.inp + t.cr), `${fmtTok(t.cr)} from cache`)}
+      ${tile(t("done today"), jobsNow.doneToday)}
+      ${tile(t("active sessions"), td.sessions)}${tile(t("your messages"), td.prompts)}${tile(t("Claude turns"), td.turns, t("{n} tool calls", { n: td.tools }))}
+      ${tile(t("output tokens"), fmtTok(td.out), models)}${tile(t("input tokens"), fmtTok(td.inp + td.cr), t("{n} from cache", { n: fmtTok(td.cr) }))}
       ${quota}${acctTiles}
     </div>
     <div class="charts">
-      ${barChart("Output tokens per day (14 days)", st.days, (d) => d.out, (d) => `${d.date}<br>output ${fmtTok(d.out)} · input ${fmtTok(d.inp + d.cr)}<br>${d.turns} turns · ${d.tools} tool calls`, fmtTok)}
-      ${barChart("Active sessions per day (14 days)", st.days, (d) => d.sessions, (d) => `${d.date}<br>${d.sessions} active sessions · ${d.prompts} messages from you`, String)}
+      ${barChart(t("Output tokens per day (14 days)"), st.days, (d) => d.out, (d) => `${d.date}<br>${t("output {o} · input {i}", { o: fmtTok(d.out), i: fmtTok(d.inp + d.cr) })}<br>${t("{t} turns · {n} tool calls", { t: d.turns, n: d.tools })}`, fmtTok)}
+      ${barChart(t("Active sessions per day (14 days)"), st.days, (d) => d.sessions, (d) => `${d.date}<br>${t("{s} active sessions · {p} messages from you", { s: d.sessions, p: d.prompts })}`, String)}
     </div>
-    ${st.top.length ? `<div class="top-s"><div class="tl">Top sessions by tokens today</div>${st.top.map((x) => `<a href="${x.href}"><span>${esc(x.name)}</span><b>${fmtTok(x.tokens)}</b></a>`).join("")}</div>` : ""}`;
-  if (!wide()) { const b = document.createElement("button"); b.className = "ov-x"; b.textContent = "▴"; b.title = "Collapse"; b.onclick = () => { store.set("ovOpen", "0"); overviewSig = ""; renderOverview(); }; el.querySelector("h2")?.appendChild(b); }
+    ${st.top.length ? `<div class="top-s"><div class="tl">${t("Top sessions by tokens today")}</div>${st.top.map((x) => `<a href="${x.href}"><span>${esc(x.name)}</span><b>${fmtTok(x.tokens)}</b></a>`).join("")}</div>` : ""}`;
+  if (!wide()) { const b = document.createElement("button"); b.className = "ov-x"; b.textContent = "▴"; b.title = t("Collapse"); b.onclick = () => { store.set("ovOpen", "0"); overviewSig = ""; renderOverview(); }; el.querySelector("h2")?.appendChild(b); }
   el.querySelectorAll(".bar").forEach((b) => {
     b.addEventListener("mouseenter", (e) => showTip(b.dataset.tip, e)); b.addEventListener("mousemove", (e) => showTip(b.dataset.tip, e));
     b.addEventListener("mouseleave", hideTip); b.addEventListener("click", (e) => showTip(b.dataset.tip, e));
@@ -382,22 +391,22 @@ function machinesBlock() {
   for (const x of ms) {
     if (!x.online) continue; // the offline banner covers it
     const h = x.m?.health, qd = x.m?.quarterdeck, bad = [];
-    if (x.id && (!qd || qd.protocol < mine)) { bad.push("old"); warns.push(`<b>${esc(x.label)}</b> runs an older Quarterdeck${qd ? ` (protocol ${qd.protocol}, this page expects ${mine})` : ""}: deploy the update to it.`); }
-    if (h?.disk?.low) { bad.push("disk"); warns.push(`<b>${esc(x.label)}</b>: disk almost full — ${h.disk.freePct}% free (${h.disk.freeGB} GB).`); }
+    if (x.id && (!qd || qd.protocol < mine)) { bad.push("old"); warns.push(t("{m} runs an older Quarterdeck", { m: `<b>${esc(x.label)}</b>` }) + (qd ? t(" (protocol {p}, this page expects {e})", { p: qd.protocol, e: mine }) : "") + t(": deploy the update to it.")); }
+    if (h?.disk?.low) { bad.push("disk"); warns.push(t("{m}: disk almost full — {p}% free ({g} GB).", { m: `<b>${esc(x.label)}</b>`, p: h.disk.freePct, g: h.disk.freeGB })); }
     for (const a of x.accounts) {
       const left = a.loginExpiresAt ? (Date.parse(a.loginExpiresAt) - Date.now()) / 86400000 : Infinity;
-      if (!a.loggedIn) { bad.push("login"); warns.push(`<b>${esc(x.label)}</b>: Claude account ${esc(a.email || a.id)} is logged out.`); }
-      else if (left < 7) { bad.push("login"); warns.push(`<b>${esc(x.label)}</b>: Claude login (${esc(a.email || a.id)}) expires ${left < 1 ? "today" : `in ${Math.ceil(left)} days`}.`); }
+      if (!a.loggedIn) { bad.push("login"); warns.push(t("{m}: Claude account {a} is logged out.", { m: `<b>${esc(x.label)}</b>`, a: esc(a.email || a.id) })); }
+      else if (left < 7) { bad.push("login"); warns.push(left < 1 ? t("{m}: Claude login ({a}) expires today.", { m: `<b>${esc(x.label)}</b>`, a: esc(a.email || a.id) }) : t("{m}: Claude login ({a}) expires in {n} days.", { m: `<b>${esc(x.label)}</b>`, a: esc(a.email || a.id), n: Math.ceil(left) })); }
     }
-    if (!h) { rows.push(`<div class="mrow"><b>${esc(x.label)}</b><span class="dim">no machine data${qd ? "" : " (older version)"}</span></div>`); continue; }
+    if (!h) { rows.push(`<div class="mrow"><b>${esc(x.label)}</b><span class="dim">${t("no machine data")}${qd ? "" : t(" (older version)")}</span></div>`); continue; }
     const login = x.accounts.filter((a) => a.loggedIn && a.loginExpiresAt).map((a) => a.loginExpiresAt.slice(5, 10)).sort()[0];
     const parts = [
-      h.disk ? `<span class="${h.disk.low ? "warnt" : ""}">disk ${h.disk.freePct}% free</span>` : "",
-      `load ${h.load1}/${h.cpus}`,
-      h.mem && h.mem.usedPct >= 0 ? `mem ${h.mem.usedPct}%` : "",
+      h.disk ? `<span class="${h.disk.low ? "warnt" : ""}">${t("disk {p}% free", { p: h.disk.freePct })}</span>` : "",
+      t("load {l}/{c}", { l: h.load1, c: h.cpus }),
+      h.mem && h.mem.usedPct >= 0 ? t("mem {p}%", { p: h.mem.usedPct }) : "",
       ...h.gpu.map((g) => `GPU ${g.utilPct}% · ${g.memUsedGB}/${g.memTotalGB} GB`),
       h.claudeVersion ? `Claude ${esc(h.claudeVersion)}` : "",
-      login ? `<span class="${bad.includes("login") ? "warnt" : ""}">login until ${esc(login)}</span>` : "",
+      login ? `<span class="${bad.includes("login") ? "warnt" : ""}">${t("login until {d}", { d: esc(login) })}</span>` : "",
     ].filter(Boolean);
     rows.push(`<div class="mrow" title="Quarterdeck ${esc(qd?.version || "?")} · build ${esc(qd?.build || "?")} · protocol ${qd?.protocol ?? "?"}"><b>${esc(x.label)}</b>${parts.map((p) => `<span>${p}</span>`).join("")}</div>`);
   }
@@ -411,20 +420,22 @@ function renderDash() {
   const working = data.jobs.filter((j) => jobState(j) === "working");
   const rest = data.jobs.filter((j) => !isBlocked(j) && jobState(j) !== "working");
   const el = $("#dashBody"); const y = $("#dash").scrollTop;
-  const hint = wide() && store.get("hintHidden") !== "1" ? `<div class="hint"><button class="hx" title="Hide this hint" aria-label="Hide hint">×</button>Open any session to get <b>Chat</b> · <b>Terminal</b> · <b>Split</b> (both side by side) · <b>Changes</b> (this session's diffs).
-    <kbd>⌘K</kbd> switch session · <kbd>Alt+1–4</kbd> switch view · <kbd>Alt+N</kbd> new · <kbd>/</kbd> type a message</div>` : "";
+  const hint = wide() && store.get("hintHidden") !== "1" ? `<div class="hint"><button class="hx" title="${t("Hide this hint")}" aria-label="${t("Hide hint")}">×</button>${t("Open any session to get <b>Chat</b> · <b>Terminal</b> · <b>Split</b> (both side by side) · <b>Changes</b> (this session's diffs).")}
+    <kbd>⌘K</kbd> ${t("switch session")} · <kbd>Alt+1–4</kbd> ${t("switch view")} · <kbd>Alt+N</kbd> ${t("new")} · <kbd>/</kbd> ${t("type a message")}</div>` : "";
   // What needs you and what is running: left column on wide screens, the very top on phones.
-  const top = section("Needs you", blocked, jobCard, { empty: "nothing waiting on you" }) + section("Running", working, jobCard);
+  const top = section(t("Needs you"), blocked, jobCard, { empty: t("nothing waiting on you") }) + section(t("Running"), working, jobCard);
   const others = finishedSection(rest) +
-    section("Interactive sessions (resume)", data.transcripts, trCard, { limit: 8, key: "tr" }) +
-    section("tmux", data.tmux, tmuxCard, { empty: "no tmux sessions" }) +
-    `<p><button id="shellBtn">Open shell (tmux “quarterdeck”)</button></p>`;
-  const off = (fleet.nodes || []).filter((n) => !n.online).map((n) => `<div class="hint warn">⚠ <b>${esc(n.label)}</b> is offline${n.lastOk ? ` (last seen ${ago(n.lastOk)} ago)` : ""}: its sessions are shown as they were, and actions on them wait until it is back.${n.error ? `<br><small>${esc(n.error)}</small>` : ""}</div>`).join("") + machinesBlock();
+    section(t("Interactive sessions (resume)"), data.transcripts, trCard, { limit: 8, key: "tr" }) +
+    section("tmux", data.tmux, tmuxCard, { empty: t("no tmux sessions") }) +
+    `<p><button id="shellBtn">${t("Open shell (tmux “quarterdeck”)")}</button></p>` +
+    `<p class="langrow">${t("Language")}: ${LANGS.map(([k, n]) => k === getLang() ? `<b>${n}</b>` : `<a href="#" data-lang="${k}">${n}</a>`).join(" · ")}</p>`;
+  const off = (fleet.nodes || []).filter((n) => !n.online).map((n) => `<div class="hint warn">⚠ ${t("{m} is offline", { m: `<b>${esc(n.label)}</b>` })}${n.lastOk ? t(" (last seen {t} ago)", { t: ago(n.lastOk) }) : ""}${t(": its sessions are shown as they were, and actions on them wait until it is back.")}${n.error ? `<br><small>${esc(n.error)}</small>` : ""}</div>`).join("") + machinesBlock();
   const dt = $("#dashTop"); dt.hidden = wide(); dt.innerHTML = wide() ? "" : off + top;
   el.innerHTML = wide() ? off + hint + `<div class="cols"><div class="col">${top}</div><div class="col">${others}</div></div>` : others;
   $("#dash").scrollTop = y;
   el.querySelectorAll("[data-more]").forEach((b) => (b.onclick = () => { showAll[b.dataset.more] = true; renderDash(); }));
   $("#shellBtn").onclick = () => (location.hash = "#/shell");
+  el.querySelectorAll("[data-lang]").forEach((a) => (a.onclick = (e) => { e.preventDefault(); store.set("lang", a.dataset.lang); location.reload(); }));
   $("#dash").querySelectorAll("#dashTop [data-rm], #dashBody [data-rm]").forEach((b) => (b.onclick = (e) => { e.preventDefault(); e.stopPropagation(); removeJob(b.dataset.rm, b.dataset.node || ""); }));
   rememberGroups($("#dash"), "details.grp");
   el.querySelector(".hint .hx")?.addEventListener("click", () => { store.set("hintHidden", "1"); renderDash(); });
@@ -432,8 +443,8 @@ function renderDash() {
 async function removeJob(id, node = "") {
   const j = findJob(id, node); if (!j) return;
   const running = j.state !== "done";
-  if (!confirm(`${running ? `"${j.name}" is still running or waiting for you.\nStop it and remove it from the list?` : `Remove "${j.name}" from the list?`}\n(The transcript is kept — resume it later from "Interactive sessions".)`)) return;
-  try { await api(nb(node) + "/api/rm", { id }); toast("removed"); if (location.hash === hrefOf("job", id, node)) location.hash = ""; await poll(); } catch (e) { toast(e.message, 5000); }
+  if (!confirm(`${running ? t('"{name}" is still running or waiting for you.\nStop it and remove it from the list?', { name: j.name }) : t('Remove "{name}" from the list?', { name: j.name })}\n${t('(The transcript is kept — resume it later from "Interactive sessions".)')}`)) return;
+  try { await api(nb(node) + "/api/rm", { id }); toast(t("removed")); if (location.hash === hrefOf("job", id, node)) location.hash = ""; await poll(); } catch (e) { toast(e.message, 5000); }
 }
 
 // ───────────── routing ─────────────
@@ -479,7 +490,7 @@ function go() {
   document.querySelectorAll("#tabs .tab").forEach((b) => (b.hidden = !has[b.dataset.tab]));
   cur.has = has;
   refreshMeta(); renderKeys(); renderSide();
-  $("#input").placeholder = cur.kind === "transcript" ? "Message → resumes this session in the background…" : wide() ? "Message…  (Enter send · Shift+Enter newline)" : "Message…";
+  $("#input").placeholder = t(cur.kind === "transcript" ? "Message → resumes this session in the background…" : wide() ? "Message…  (Enter send · Shift+Enter newline)" : "Message…");
   syncSend();
   const saved = store.get(`tab:${cur.kind}:${wide() ? "w" : "n"}`);
   setTab(saved && has[saved] && (saved !== "split" || wide()) ? saved : has.chat ? (wide() && has.split && cur.kind === "job" ? "split" : "chat") : "term");
@@ -500,23 +511,23 @@ function refreshMeta() {
     // One row: name · state · detail · Stop (only while it is doing something) · ⋯ (full detail, folder, id, Close).
     const canStop = st === "working" || st === "blocked";
     const extra = plug.jobButtons.flatMap((f) => { try { return f(j) || []; } catch { return []; } }); // plug-in buttons: [{ label, title?, onClick }]
-    const html = `<div class="meta-row"><b class="meta-name">${esc(j.name)}</b><span class="chip ${st}">${esc(st)}</span>${hostChip(j.node)}${acctBadge(j.profile, j.node)}<span class="meta-detail">${esc(j.detail)}</span><span class="spacer"></span>
-      ${extra.map((b, i) => `<button data-pb="${i}" title="${esc(b.title || "")}">${esc(b.label)}</button>`).join("")}${canStop ? `<button id="stopBtn" class="danger">Stop</button>` : ""}<button id="moreBtn" class="icon" title="Details and actions" aria-expanded="${!!cur.metaOpen}">⋯</button></div>
+    const html = `<div class="meta-row"><b class="meta-name">${esc(j.name)}</b><span class="chip ${st}">${esc(stLabel(st))}</span>${hostChip(j.node)}${acctBadge(j.profile, j.node)}<span class="meta-detail">${esc(j.detail)}</span><span class="spacer"></span>
+      ${extra.map((b, i) => `<button data-pb="${i}" title="${esc(b.title || "")}">${esc(b.label)}</button>`).join("")}${canStop ? `<button id="stopBtn" class="danger">${t("Stop")}</button>` : ""}<button id="moreBtn" class="icon" title="${t("Details and actions")}" aria-expanded="${!!cur.metaOpen}">⋯</button></div>
       ${nt && nt !== j.detail ? `<div class="needs">⚑ ${esc(nt)}</div>` : ""}
-      <div class="meta-more" ${cur.metaOpen ? "" : "hidden"}><div class="mm-detail">${esc(j.detail || j.intent || "")}</div><div class="mm-row"><span title="${esc(j.cwd)}">${esc(short(j.cwd))}</span><span>${esc(j.id)}</span><span class="spacer"></span><button id="rmBtn" title="Close and remove from the list (transcript is kept)">× Close</button></div></div>`;
+      <div class="meta-more" ${cur.metaOpen ? "" : "hidden"}><div class="mm-detail">${esc(j.detail || j.intent || "")}</div><div class="mm-row"><span title="${esc(j.cwd)}">${esc(short(j.cwd))}</span><span>${esc(j.id)}</span><span class="spacer"></span><button id="rmBtn" title="${t("Close and remove from the list (transcript is kept)")}">${t("× Close")}</button></div></div>`;
     if (m._sig === html) return; m._sig = html; m.innerHTML = html; // unchanged → keep the DOM (no flicker, no lost taps)
     const toggle = () => { cur.metaOpen = !cur.metaOpen; m._sig = ""; refreshMeta(); };
     $("#moreBtn").onclick = toggle; m.querySelector(".meta-detail").onclick = toggle;
     $("#rmBtn").onclick = () => removeJob(j.id, j.node);
     m.querySelectorAll("[data-pb]").forEach((b) => (b.onclick = () => extra[+b.dataset.pb].onClick(j)));
-    if ($("#stopBtn")) $("#stopBtn").onclick = async () => { if (!confirm(`Stop session "${j.name}"? (The conversation is kept.)`)) return; try { await api(nb(j.node) + "/api/stop", { id: j.id }); toast("stopped"); poll(); } catch (e) { toast(e.message); } };
+    if ($("#stopBtn")) $("#stopBtn").onclick = async () => { if (!confirm(t('Stop session "{name}"? (The conversation is kept.)', { name: j.name }))) return; try { await api(nb(j.node) + "/api/stop", { id: j.id }); toast(t("stopped")); poll(); } catch (e) { toast(e.message); } };
   } else if (cur.kind === "transcript") {
     m._sig = "";
-    const t = data.transcripts.find((x) => x.sessionId === cur.id && (x.node || "") === (cur.node || ""));
-    m.innerHTML = `<b class="meta-name">${esc(cur.title)}</b><span class="chip">interactive transcript</span><span>${esc(short(t?.cwd))}</span><span class="spacer"></span>${hostChip(cur.node)}${multiAccount(cur.node) ? `<select id="resumeProfile" title="Account that resumes this conversation">${acctOptions(cur.resumeProfile || "default", cur.node)}</select>` : ""}<button id="resumeBtn">Resume in background</button>`;
+    const tr = data.transcripts.find((x) => x.sessionId === cur.id && (x.node || "") === (cur.node || ""));
+    m.innerHTML = `<b class="meta-name">${esc(cur.title)}</b><span class="chip">${t("interactive transcript")}</span><span>${esc(short(tr?.cwd))}</span><span class="spacer"></span>${hostChip(cur.node)}${multiAccount(cur.node) ? `<select id="resumeProfile" title="${t("Account that resumes this conversation")}">${acctOptions(cur.resumeProfile || "default", cur.node)}</select>` : ""}<button id="resumeBtn">${t("Resume in background")}</button>`;
     $("#resumeBtn").onclick = () => resume("");
     if ($("#resumeProfile")) $("#resumeProfile").onchange = (e) => { cur.resumeProfile = e.target.value; };
-  } else m.innerHTML = `<b class="meta-name">${esc(cur.title)}</b><span class="chip">${esc(cur.kind)}</span><span>persistent — closing this page does not stop it</span>`;
+  } else m.innerHTML = `<b class="meta-name">${esc(cur.title)}</b><span class="chip">${esc(cur.kind)}</span><span>${t("persistent — closing this page does not stop it")}</span>`;
 }
 
 // ───────────── tabs ─────────────
@@ -542,7 +553,7 @@ function setTab(tab, byUser) {
 
 // ───────────── chat (rendered transcript, live) ─────────────
 function openChat(opt = {}) {
-  const ev = $("#events"); if (!opt.keep) ev.innerHTML = `<div class="empty">loading…</div>`;
+  const ev = $("#events"); if (!opt.keep) ev.innerHTML = `<div class="empty">${t("loading…")}</div>`;
   cur.toolEls = new Map(); cur.lastTs = 0; cur.subs = new Map(); cur.bgs = new Map(); cur.agentIds = new Map();
   cur.tailLimit = cur.tailLimit || 600; cur.newDiv = null;
   // What arrived since you last read this session (on this device) gets a "new since" divider.
@@ -554,7 +565,7 @@ function openChat(opt = {}) {
     const d = JSON.parse(m.data); if (d.t !== "events" || ctx !== cur) return;
     const chat = $("#chat"); const stick = !d.initial && chat.scrollHeight - chat.scrollTop - chat.clientHeight < 120;
     if (d.initial) {
-      ev.innerHTML = !d.truncated ? "" : ctx.tailLimit >= 6000 ? `<div class="empty">(older messages omitted)</div>` : `<div class="earlier"><button id="earlierBtn">Load earlier messages</button></div>`;
+      ev.innerHTML = !d.truncated ? "" : ctx.tailLimit >= 6000 ? `<div class="empty">${t("(older messages omitted)")}</div>` : `<div class="earlier"><button id="earlierBtn">${t("Load earlier messages")}</button></div>`;
       if ($("#earlierBtn")) $("#earlierBtn").onclick = loadEarlier;
       ctx.initialLoad = true;
     }
@@ -577,7 +588,7 @@ function openChat(opt = {}) {
 function loadEarlier() {
   if (!cur?.tailWs) return;
   const first = $("#events").querySelector(".ev[data-id]");
-  const btn = $("#earlierBtn"); if (btn) { btn.disabled = true; btn.textContent = "loading…"; }
+  const btn = $("#earlierBtn"); if (btn) { btn.disabled = true; btn.textContent = t("loading…"); }
   cur.tailLimit = Math.min(6000, cur.tailLimit * 4);
   const ws = cur.tailWs; ws.onclose = null; ws.close(); cur.tailWs = null;
   openChat({ anchor: first?.dataset.id, keep: true });
@@ -592,7 +603,7 @@ $("#jump").onclick = () => { const c = $("#chat"); c.scrollTop = c.scrollHeight;
 function addPending(text) {
   const ev = $("#events"); const d = document.createElement("div");
   d.className = "ev user pending"; d.dataset.text = text.replace(/\s+/g, " ").trim(); d.dataset.at = String(Date.now());
-  d.innerHTML = `<span class="ptext"></span><span class="pstate">sending…</span>`; d.querySelector(".ptext").textContent = text;
+  d.innerHTML = `<span class="ptext"></span><span class="pstate">${t("sending…")}</span>`; d.querySelector(".ptext").textContent = text;
   ev.appendChild(d); const c = $("#chat"); c.scrollTop = c.scrollHeight;
 }
 const fmtSecs = (s) => (s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${String(s % 60).padStart(2, "0")}s`);
@@ -610,13 +621,13 @@ function renderActivity() {
   const working = !!(j && !menuShown && (j.phase ? j.phase === "working" : (!isBlocked(j) && (j.state === "working" || j.tempo === "active"))) || (j && cur.awaitingSince && !menuShown));
   const detailFresh = j && !(cur.awaitingSince && Date.parse(j.updatedAt) <= cur.awaitingSince) && Date.parse(j.updatedAt) >= (j.activityAt || 0) - 60_000; // don't show a stale status line
   const pending = [...ev.querySelectorAll(".ev.user.pending")];
-  for (const p of pending) if (Date.now() - Number(p.dataset.at) > 30_000) p.querySelector(".pstate").textContent = "not confirmed yet";
+  for (const p of pending) if (Date.now() - Number(p.dataset.at) > 30_000) p.querySelector(".pstate").textContent = t("not confirmed yet");
   let text = "", cls = "";
-  if (cur.tailWs?.readyState !== 1) { text = "live connection lost — reconnecting…"; cls = "warn"; }
+  if (cur.tailWs?.readyState !== 1) { text = t("live connection lost — reconnecting…"); cls = "warn"; }
   else if (working) {
     if (!cur.workSince) cur.workSince = Date.now();
-    text = `Claude is working${j.detail && detailFresh ? " · " + j.detail : ""} · ${fmtSecs(Math.round((Date.now() - cur.workSince) / 1000))}`;
-  } else if (pending.length) text = "sent — waiting for Claude to pick it up…";
+    text = `${t("Claude is working")}${j.detail && detailFresh ? " · " + j.detail : ""} · ${fmtSecs(Math.round((Date.now() - cur.workSince) / 1000))}`;
+  } else if (pending.length) text = t("sent — waiting for Claude to pick it up…");
   if (!working && !pending.length) cur.workSince = null;
   let el = $("#activity");
   if (!text) { el?.remove(); return; }
@@ -633,8 +644,8 @@ setInterval(renderActivity, 1000);
 function markBgDone(taskId, status) {
   const bg = cur?.bgs.get(taskId);
   if (bg) {
-    bg.done = true; bg.box.querySelector(".bghead").textContent = `✓ background · ${status || "finished"}`;
-    const st = bg.det.querySelector(".st"); st.textContent = `✓ background · ${status || "finished"}`; st.className = "st"; pollBg(taskId);
+    bg.done = true; bg.box.querySelector(".bghead").textContent = `✓ ${t("background")} · ${status || t("finished")}`;
+    const st = bg.det.querySelector(".st"); st.textContent = `✓ ${t("background")} · ${status || t("finished")}`; st.className = "st"; pollBg(taskId);
   }
   const tool = cur?.agentIds.get(taskId); const sub = tool && cur.subs.get(tool);
   if (sub) { sub.done = true; pollSub(tool, true); }
@@ -650,10 +661,10 @@ async function pollSub(toolId, force) {
     if (d.status === "done" && !sub.async) sub.done = true;
     const evs = d.events || []; const lastTool = [...evs].reverse().find((x) => x.k === "tool");
     const st = sub.det.querySelector(".st");
-    st.textContent = sub.done ? `✓ ${d.steps} steps` : `running · ${d.steps} steps${lastTool ? " · " + toolName(lastTool.name) : ""}`;
+    st.textContent = sub.done ? `✓ ${t("{n} steps", { n: d.steps })}` : `${t("running")} · ${t("{n} steps", { n: d.steps })}${lastTool ? " · " + toolName(lastTool.name) : ""}`;
     st.className = `st ${sub.done ? "" : "pending"}`;
     if (sub.det.open) {
-      sub.feed.innerHTML = `<div class="subhead">sub-agent${d.agentType ? " · " + esc(d.agentType) : ""}${d.model ? " · " + esc(d.model) : ""}${d.background ? " · background" : ""}</div>` +
+      sub.feed.innerHTML = `<div class="subhead">${t("sub-agent")}${d.agentType ? " · " + esc(d.agentType) : ""}${d.model ? " · " + esc(d.model) : ""}${d.background ? ` · ${t("background")}` : ""}</div>` +
         evs.filter((x) => x.k === "tool" || x.k === "assistant").slice(-30).map((x) => x.k === "tool"
           ? `<div class="subrow"><span class="tn">${esc(toolName(x.name))}</span> ${sumHtml(x.summary)}</div>`
           : `<div class="subrow say">${esc(String(x.text).slice(0, 300))}</div>`).join("");
@@ -667,10 +678,10 @@ async function pollBg(taskId) {
     const d = await api(`${nb(ctx.node)}/api/bgout?session=${encodeURIComponent(ctx.sessionId)}&task=${encodeURIComponent(taskId)}`);
     if (ctx !== cur) return;
     const out = bg.box.querySelector(".bgout");
-    if (!d.exists) { out.textContent = bg.done ? "(output file no longer exists)" : "(no output yet)"; return; }
-    const lines = String(d.text || "").split("\n"); out.textContent = lines.slice(-30).join("\n") || "(empty)";
-    if (!bg.done) { const last = lines.filter((l) => l.trim()).pop() || ""; const st = bg.det.querySelector(".st"); st.textContent = `background · running${last ? " · " + last.slice(0, 40) : ""}`; }
-    if (!bg.done) bg.box.querySelector(".bghead").textContent = `⏳ background · running · updated ${ago(d.mtime)} ago`.replace("now ago", "just now");
+    if (!d.exists) { out.textContent = bg.done ? t("(output file no longer exists)") : t("(no output yet)"); return; }
+    const lines = String(d.text || "").split("\n"); out.textContent = lines.slice(-30).join("\n") || t("(empty)");
+    if (!bg.done) { const last = lines.filter((l) => l.trim()).pop() || ""; const st = bg.det.querySelector(".st"); st.textContent = `${t("background")} · ${t("running")}${last ? " · " + last.slice(0, 40) : ""}`; }
+    if (!bg.done) bg.box.querySelector(".bghead").textContent = `⏳ ${t("background")} · ${t("running")} · ${ago(d.mtime) === "now" ? t("updated just now") : t("updated {t} ago", { t: ago(d.mtime) })}`;
   } catch {} finally { bg.busy = false; }
 }
 setInterval(() => {
@@ -681,37 +692,37 @@ setInterval(() => {
 
 function addEvent(e) {
   const ev = $("#events");
-  const t = Date.parse(e.ts);
-  if (t && t - cur.lastTs > 20 * 60_000) { const d = document.createElement("div"); d.className = "ts-label"; d.textContent = new Date(t).toLocaleString(); ev.appendChild(d); }
-  if (t) cur.lastTs = t;
+  const ts = Date.parse(e.ts);
+  if (ts && ts - cur.lastTs > 20 * 60_000) { const d = document.createElement("div"); d.className = "ts-label"; d.textContent = new Date(ts).toLocaleString(); ev.appendChild(d); }
+  if (ts) cur.lastTs = ts;
   if (e.k === "bgdone") { markBgDone(e.taskId, e.status); return; }
   if (e.k === "result") {
     const det = cur.toolEls.get(e.toolId); if (!det) return;
-    { const st = det.querySelector(".st"); st.textContent = e.isError ? "error" : "✓"; st.className = `st ${e.isError ? "err" : ""}`; } // generic first; special states below override it
+    { const st = det.querySelector(".st"); st.textContent = e.isError ? t("error") : "✓"; st.className = `st ${e.isError ? "err" : ""}`; } // generic first; special states below override it
     const sub = cur.subs.get(e.toolId);
     if (sub) { // sub-agent: async ones keep running until their task notification; sync ones are done now
       if (e.agentId) cur.agentIds.set(e.agentId, e.toolId);
       if (!/^Async agent launched/i.test(e.text || "")) sub.done = true;
-      else { sub.async = true; const st = det.querySelector(".st"); st.textContent = "sub-agent running"; st.className = "st pending"; } // launched in the background: done only when its task notification arrives
+      else { sub.async = true; const st = det.querySelector(".st"); st.textContent = t("sub-agent running"); st.className = "st pending"; } // launched in the background: done only when its task notification arrives
     }
     if (e.bg) { // background shell: a live output box, polled until its task notification arrives
       const box = document.createElement("div"); box.className = "bgbox";
-      box.innerHTML = `<div class="bghead">⏳ background · running</div><pre class="bgout">…</pre>`;
+      box.innerHTML = `<div class="bghead">⏳ ${t("background")} · ${t("running")}</div><pre class="bgout">…</pre>`;
       det.appendChild(box); cur.bgs.set(e.bg, { det, box, done: false });
-      const st = det.querySelector(".st"); st.textContent = "background · running"; st.className = "st pending";
+      const st = det.querySelector(".st"); st.textContent = `${t("background")} · ${t("running")}`; st.className = "st pending";
       if (Date.now() - Date.parse(e.ts) < 10 * 60_000) det.open = true; // just started → show the live output
     }
-    const pre = document.createElement("pre"); pre.textContent = e.text || "(no output)"; det.appendChild(pre);
+    const pre = document.createElement("pre"); pre.textContent = e.text || t("(no output)"); det.appendChild(pre);
     return;
   }
   if (e.k === "user") { // the transcript confirmed it → drop the matching optimistic bubble
     const norm = (x) => String(x || "").replace(/\s+/g, " ").trim();
     for (const p of ev.querySelectorAll(".ev.user.pending")) if (p.dataset.text === norm(e.text)) { p.remove(); break; }
   }
-  if (cur.initialLoad && !cur.newDiv && cur.seenAt && t > cur.seenAt && ev.querySelector(".ev")) {
+  if (cur.initialLoad && !cur.newDiv && cur.seenAt && ts > cur.seenAt && ev.querySelector(".ev")) {
     const at = new Date(cur.seenAt), today = at.toDateString() === new Date().toDateString();
     const nd = document.createElement("div"); nd.className = "new-div";
-    nd.textContent = `new since ${today ? at.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : at.toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}`;
+    nd.textContent = t("new since {t}", { t: today ? at.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : at.toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }) });
     ev.appendChild(nd); cur.newDiv = nd;
   }
   const div = document.createElement("div"); div.className = `ev ${e.k}`; if (e.id) div.dataset.id = e.id;
@@ -734,21 +745,21 @@ function addEvent(e) {
 // ───────────── changes (files this session edited, with diffs) ─────────────
 async function loadChanges() {
   const el = $("#changes"); const ctx = cur;
-  if (!el.dataset.loaded) el.innerHTML = `<div class="empty">loading…</div>`;
+  if (!el.dataset.loaded) el.innerHTML = `<div class="empty">${t("loading…")}</div>`;
   let d; try { d = await api(`${nb(cur.node)}/api/changes?session=${encodeURIComponent(cur.sessionId)}`); } catch (e) { el.innerHTML = `<div class="empty">${esc(e.message)}</div>`; return; }
   if (ctx !== cur) return;
   const open = new Set([...el.querySelectorAll("details.file[open]")].map((x) => x.dataset.p));
   el.dataset.loaded = "1";
   const totA = d.files.reduce((s, f) => s + f.add, 0), totD = d.files.reduce((s, f) => s + f.del, 0);
-  el.innerHTML = `<div class="chg-head"><span>${d.files.length} file(s) edited by this session</span><span class="add">+${totA}</span><span class="del">−${totD}</span><span class="spacer"></span><span>diff vs HEAD, current disk state</span><button id="chgRefresh">⟳</button></div>` +
-    (d.files.length ? "" : `<div class="empty">This session hasn't edited any files.</div>`) +
+  el.innerHTML = `<div class="chg-head"><span>${t("{n} file(s) edited by this session", { n: d.files.length })}</span><span class="add">+${totA}</span><span class="del">−${totD}</span><span class="spacer"></span><span>${t("diff vs HEAD, current disk state")}</span><button id="chgRefresh">⟳</button></div>` +
+    (d.files.length ? "" : `<div class="empty">${t("This session hasn't edited any files.")}</div>`) +
     (() => {
       const fileHtml = (f) => `<details class="file" data-p="${esc(f.path)}" ${open.has(f.path) ? "open" : ""}><summary>
       <span class="stat ${esc(f.status)}">${esc(f.status)}</span><span class="p" title="${esc(f.path)}">${pathHtml(f.rel)}</span>
       ${f.repo ? `<span class="stat">${esc(f.repo)}</span>` : ""}<span class="add">+${f.add}</span><span class="del">−${f.del}</span><span class="stat">${ago(f.last)}</span></summary>
-      ${f.diff ? diffHtml(f.diff) : `<div class="empty" style="padding:4px 10px 8px">${f.status === "clean" ? "no uncommitted changes (already committed or reverted)" : "no diff available"}</div>`}</details>`;
+      ${f.diff ? diffHtml(f.diff) : `<div class="empty" style="padding:4px 10px 8px">${f.status === "clean" ? t("no uncommitted changes (already committed or reverted)") : t("no diff available")}</div>`}</details>`;
       const chg = d.files.filter((f) => f.status !== "clean"), same = d.files.filter((f) => f.status === "clean");
-      return chg.map(fileHtml).join("") + (same.length ? `<details class="unchanged" ${el.querySelector("details.unchanged[open]") ? "open" : ""}><summary>${same.length} unchanged (already committed or reverted)</summary>${same.map(fileHtml).join("")}</details>` : "");
+      return chg.map(fileHtml).join("") + (same.length ? `<details class="unchanged" ${el.querySelector("details.unchanged[open]") ? "open" : ""}><summary>${t("{n} unchanged (already committed or reverted)", { n: same.length })}</summary>${same.map(fileHtml).join("")}</details>` : "");
     })();
   $("#chgRefresh").onclick = loadChanges;
 }
@@ -783,13 +794,13 @@ function connectPty(ctx) {
   ws.onopen = () => { ctx.retry = 0; ctx.term.reset(); fitTerm(true); };
   ws.onmessage = (m) => {
     if (ctx.closing || ctx !== cur) return; // late bytes after a view switch: the terminal is already disposed
-    if (typeof m.data === "string") { const d = JSON.parse(m.data); if (d.t === "exit") { ctx.term.write("\r\n\x1b[33m[process exited — reopen the session to restart it]\x1b[0m\r\n"); ctx.exited = true; } return; }
+    if (typeof m.data === "string") { const d = JSON.parse(m.data); if (d.t === "exit") { ctx.term.write(`\r\n\x1b[33m${t("[process exited — reopen the session to restart it]")}\x1b[0m\r\n`); ctx.exited = true; } return; }
     ctx.term.write(new Uint8Array(m.data));
   };
   ws.onclose = () => {
     if (ctx !== cur || ctx.closing || ctx.exited) return;
     const wait = Math.min(8000, 500 * 2 ** (ctx.retry = (ctx.retry || 0) + 1));
-    ctx.term.write(`\r\n\x1b[90m[disconnected — reconnecting in ${wait / 1000}s]\x1b[0m`);
+    ctx.term.write(`\r\n\x1b[90m${t("[disconnected — reconnecting in {s}s]", { s: wait / 1000 })}\x1b[0m`);
     setTimeout(() => ctx === cur && connectPty(ctx), wait);
   };
 }
@@ -812,7 +823,7 @@ const KEYS = [
 function renderKeys() {
   const k = $("#keys");
   if (!cur.target) { k.innerHTML = ""; return; }
-  k.innerHTML = KEYS.map(([l], i) => `<button data-k="${i}">${esc(l)}</button>`).join("") + `<button data-redraw>⟳ redraw</button>`;
+  k.innerHTML = KEYS.map(([l], i) => `<button data-k="${i}">${esc(l)}</button>`).join("") + `<button data-redraw>${t("⟳ redraw")}</button>`;
   k.querySelectorAll("[data-k]").forEach((b) => (b.onclick = async (ev) => {
     ev.preventDefault(); const seq = KEYS[+b.dataset.k][1];
     if (cur.ptyWs?.readyState === 1) sendPty({ t: "in", d: seq });
@@ -841,14 +852,14 @@ $("#composer").onsubmit = async (e) => {
     else await api(nb(cur.node) + "/api/send", { target: cur.target, text });
     input.value = ""; input.style.height = "auto"; syncSend();
     if (cur.kind === "job" && !$("#chat").hidden && text.trim()) { addPending(text); cur.workSince = cur.awaitingSince = Date.now(); renderActivity(); }
-    else toast("sent");
+    else toast(t("sent"));
   } catch (err) { toast(err.message); } finally { syncSend(); }
 };
 async function resume(prompt) {
-  if (!confirm("Resume this conversation as a background session? (If it is still open in a terminal, Claude starts a copy.)")) return;
+  if (!confirm(t("Resume this conversation as a background session? (If it is still open in a terminal, Claude starts a copy.)"))) return;
   const node = cur.node;
   const r = await api(nb(node) + "/api/resume", { sessionId: cur.id, prompt, profile: $("#resumeProfile")?.value || "default" });
-  toast(r.out.split("\n")[0] || "resumed");
+  toast(r.out.split("\n")[0] || t("resumed"));
   await poll();
   if (r.id) location.hash = hrefOf("job", r.id, node);
 }
@@ -875,14 +886,14 @@ function renderPrompt(m) {
     return `<span class="pc-step ${done ? "done" : ""}">${done ? "✓ " : ""}${esc(label)}</span>`;
   }).join('<span class="pc-sep">›</span>') : "";
   const review = m.options.some((o) => /^Submit answers/i.test(o.label));
-  const hint = review ? "Check the answers, then tap “Submit answers”" : m.multiSelect ? "Tick as many as you like, then tap Next ›" : m.hasTabs ? "Pick one — it moves to the next question" : "";
+  const hint = t(review ? "Check the answers, then tap “Submit answers”" : m.multiSelect ? "Tick as many as you like, then tap Next ›" : m.hasTabs ? "Pick one — it moves to the next question" : "");
   // Back/Next sit in the header so they stay visible on a phone without scrolling the card.
-  const nav = m.hasTabs || m.multiSelect ? `<span class="pc-nav"><button data-k="back">‹ Back</button>${review ? "" : `<button data-k="next" class="primary">Next ›</button>`}</span>` : "";
-  el.innerHTML = `<div class="pc-head"><span class="chip blocked">waiting for your choice</span>${steps ? `<span class="pc-tabs">${steps}</span>` : ""}${nav}</div>
+  const nav = m.hasTabs || m.multiSelect ? `<span class="pc-nav"><button data-k="back">${t("‹ Back")}</button>${review ? "" : `<button data-k="next" class="primary">${t("Next ›")}</button>`}</span>` : "";
+  el.innerHTML = `<div class="pc-head"><span class="chip blocked">${t("waiting for your choice")}</span>${steps ? `<span class="pc-tabs">${steps}</span>` : ""}${nav}</div>
     ${m.title ? `<div class="pc-title">${esc(m.title)}</div>` : ""}
     ${hint ? `<div class="pc-hint">${esc(hint)}</div>` : ""}
     <div class="pc-opts">${m.options.map((o) => `<button class="pc-opt ${o.selected ? "sel" : ""} ${o.checked !== null ? "cb" : ""} ${o.checked ? "on" : ""}" data-n="${o.n}">${o.checked !== null ? `<span class="box">${o.checked ? "☑" : "☐"}</span>` : `<b>${o.n}.</b>`} ${esc(o.label)}${o.desc ? `<small>${esc(o.desc)}</small>` : ""}</button>`).join("")}</div>
-    <div class="pc-foot"><button data-k="up">↑</button><button data-k="down">↓</button><button data-k="enter">⏎ Enter</button><button data-k="esc">Esc</button></div>`;
+    <div class="pc-foot"><button data-k="up">↑</button><button data-k="down">↓</button><button data-k="enter">${t("⏎ Enter")}</button><button data-k="esc">Esc</button></div>`;
   const send = async (data) => {
     try {
       if (cur.ptyWs?.readyState === 1) sendPty({ t: "in", d: data }); else await api(nb(cur.node) + "/api/keys", { target: cur.target, data });
@@ -924,7 +935,7 @@ function fillNewHost(resetCwd) {
 let newProj = { list: [] }, memTimer = null;
 async function loadProjects() {
   const node = $("#newHost").value, prof = $("#newProfile").value || "default", list = $("#newProjList");
-  list.innerHTML = `<div class="empty">loading…</div>`;
+  list.innerHTML = `<div class="empty">${t("loading…")}</div>`;
   try { newProj = { list: (await api(`${nb(node)}/api/projects?profile=${encodeURIComponent(prof)}`)).projects || [] }; }
   catch (e) { newProj = { list: [] }; list.innerHTML = `<div class="empty">${esc(e.message)}</div>`; return; }
   if (!$("#newCwd").value && newProj.list[0]) $("#newCwd").value = newProj.list[0].path;
@@ -933,8 +944,8 @@ async function loadProjects() {
 function renderProjects() {
   const q = $("#newProjFilter").value.trim().toLowerCase(), cwd = $("#newCwd").value.trim();
   const rows = newProj.list.filter((x) => !q || x.path.toLowerCase().includes(q));
-  $("#newProjList").innerHTML = rows.map((x) => `<button type="button" class="pj ${x.path === cwd ? "on" : ""}" data-p="${esc(x.path)}"><b>${esc(x.name)}</b><span class="pjp">${esc(short(x.path))}</span>${x.src === "recent" ? `<span class="pb rc">recent</span>` : ""}${x.claudeMd ? `<span class="pb md" title="has its own CLAUDE.md">CLAUDE.md</span>` : ""}${x.git ? `<span class="pb">git</span>` : ""}${x.trust !== "yes" ? `<span class="pb warn" title="${x.trust === "parent" ? "only a folder above it is trusted; background sessions need this folder itself" : "not trusted yet"}">untrusted</span>` : ""}</button>`).join("")
-    || `<div class="empty">no match: type the folder below</div>`;
+  $("#newProjList").innerHTML = rows.map((x) => `<button type="button" class="pj ${x.path === cwd ? "on" : ""}" data-p="${esc(x.path)}"><b>${esc(x.name)}</b><span class="pjp">${esc(short(x.path))}</span>${x.src === "recent" ? `<span class="pb rc">${t("recent")}</span>` : ""}${x.claudeMd ? `<span class="pb md" title="${t("has its own CLAUDE.md")}">CLAUDE.md</span>` : ""}${x.git ? `<span class="pb">git</span>` : ""}${x.trust !== "yes" ? `<span class="pb warn" title="${x.trust === "parent" ? t("only a folder above it is trusted; background sessions need this folder itself") : t("not trusted yet")}">${t("untrusted")}</span>` : ""}</button>`).join("")
+    || `<div class="empty">${t("no match: type the folder below")}</div>`;
   $("#newProjList").querySelectorAll(".pj").forEach((b) => (b.onclick = () => { $("#newCwd").value = b.dataset.p; renderProjects(); loadMemory(); }));
 }
 async function loadMemory() {
@@ -944,10 +955,10 @@ async function loadMemory() {
     const m = await api(`${nb(node)}/api/memory?profile=${encodeURIComponent(prof)}&dir=${encodeURIComponent(dir)}`);
     if (dir !== $("#newCwd").value.trim().replace(/\/+$/, "")) return;
     const kb = (b) => (b >= 1024 ? `${Math.round(b / 1024)} KB` : `${b} B`);
-    el.innerHTML = `<div class="mm-h">Memory this session loads, top to bottom</div>` +
-      m.layers.map((l) => `<div class="ml"><span class="mlk">${esc(l.label)}</span><span class="mlp">${pathHtml(l.path)}</span><span class="mls">${kb(l.bytes)}</span>${l.note ? `<div class="mln">${esc(l.note)}</div>` : ""}</div>`).join("") +
-      (m.layers.length ? "" : `<div class="mln">no CLAUDE.md or memory files for this folder</div>`) +
-      (m.trust !== "yes" ? `<div class="mtrust">⚠ Not trusted yet: a background session can't start here until Claude Code trusts this folder itself${m.trust === "parent" ? " (a folder above it is trusted, but that doesn't count for background sessions)" : ""}. <button type="button" id="trustBtn">Open Claude here to trust it</button></div>` : "");
+    el.innerHTML = `<div class="mm-h">${t("Memory this session loads, top to bottom")}</div>` +
+      m.layers.map((l) => `<div class="ml"><span class="mlk">${esc(t(l.label))}</span><span class="mlp">${pathHtml(l.path)}</span><span class="mls">${kb(l.bytes)}</span>${l.note ? `<div class="mln">${esc(l.note)}</div>` : ""}</div>`).join("") +
+      (m.layers.length ? "" : `<div class="mln">${t("no CLAUDE.md or memory files for this folder")}</div>`) +
+      (m.trust !== "yes" ? `<div class="mtrust">${t("⚠ Not trusted yet: a background session can't start here until Claude Code trusts this folder itself")}${m.trust === "parent" ? t(" (a folder above it is trusted, but that doesn't count for background sessions)") : ""}. <button type="button" id="trustBtn">${t("Open Claude here to trust it")}</button></div>` : "");
     if ($("#trustBtn")) $("#trustBtn").onclick = () => { $("#newDlg").close("cancel"); location.hash = `#/here/${encodeURIComponent(prof + ":" + dir)}${node ? "/" + node : ""}`; };
   } catch (e) { el.innerHTML = `<div class="mtrust">${esc(e.message)}</div>`; }
 }
@@ -962,7 +973,7 @@ $("#newDlg").addEventListener("close", async () => {
   try {
     const node = $("#newHost").value;
     const r = await api(nb(node) + "/api/new", { cwd: $("#newCwd").value, name: $("#newName").value, prompt: $("#newPrompt").value, permissionMode: $("#newMode").value, profile: $("#newProfile").value || "default" });
-    toast(r.out.split("\n")[0] || "started"); $("#newPrompt").value = ""; $("#newName").value = "";
+    toast(r.out.split("\n")[0] || t("started")); $("#newPrompt").value = ""; $("#newName").value = "";
     await poll(); if (r.id) location.hash = hrefOf("job", r.id, node);
   } catch (e) { toast(e.message, 5000); }
 });
@@ -973,7 +984,7 @@ function openFind() { $("#findInput").value = ""; renderFind(); $("#findDlg").sh
 function renderFind() {
   findItems = allItems().filter((i) => match(i, $("#findInput").value.trim())).slice(0, 40);
   findSel = Math.min(findSel, Math.max(0, findItems.length - 1));
-  $("#findList").innerHTML = findItems.map((it, i) => itemHtml(it, i === findSel ? "sel" : "")).join("") || `<div class="empty" style="padding:8px">no match</div>`;
+  $("#findList").innerHTML = findItems.map((it, i) => itemHtml(it, i === findSel ? "sel" : "")).join("") || `<div class="empty" style="padding:8px">${t("no match")}</div>`;
   $("#findList .sel")?.scrollIntoView({ block: "nearest" });
 }
 $("#findBtn").onclick = openFind;
@@ -998,6 +1009,7 @@ addEventListener("keydown", (e) => {
 
 if ("serviceWorker" in navigator && window.isSecureContext) navigator.serviceWorker.register("/sw.js").then(refreshBell).catch(() => {});
 else refreshBell();
+await initLang();
 await loadPluginUi(); // before the first route, so a plug-in page like #/cleanse is known
 await poll();
 go();

@@ -18,5 +18,6 @@
   ],
   "diskWarnPct": 10,
   "watchdogSeconds": 45,
-  "plugins": []
+  "plugins": [],
+  "lang": "en"
 }

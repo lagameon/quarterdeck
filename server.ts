@@ -78,6 +78,27 @@ if (!OWNER) {
 const TAILSCALE = process.env.QUARTERDECK_TAILSCALE || CONFIG.tailscale || (process.platform === "darwin" ? "/Applications/Tailscale.app/Contents/MacOS/Tailscale" : "tailscale");
 const CLAUDE_BIN = process.env.QUARTERDECK_CLAUDE || CONFIG.claude || join(HOME, ".local/bin/claude");
 const BIND_TS = (process.env.QUARTERDECK_BIND_TS ?? (CONFIG.bindTailscale === false ? "0" : "1")) !== "0"; // also listen on the Tailscale IP
+// "lang" in config.json: the page's default language ("en" | "zh"; each device can switch) and the language of
+// the texts the server writes itself (push notifications, a few error messages). English text is the key.
+const LANG: string = ["en", "zh"].includes(CONFIG.lang) ? CONFIG.lang : "en";
+const ZH: Record<string, string> = {
+  "Background sessions can't start in your home folder: pick a project folder.": "后台会话不能在主目录启动：请选一个项目文件夹。",
+  "Claude Code has not trusted {dir} itself yet": "Claude Code 还没有信任 {dir} 本身",
+  " (only a folder above it is trusted, which background sessions don't accept)": "（只有上级文件夹被信任，后台会话不认）",
+  ". Open Claude in this folder once and accept the trust question, then start the session.": "。先在这个文件夹里打开一次 Claude 并同意信任，再启动会话。",
+  "⚠ {m}: disk almost full": "⚠ {m}：磁盘快满了", "{p}% free ({f} GB of {t} GB)": "剩 {p}%（{t} GB 中剩 {f} GB）",
+  "⚠ {m}: Claude account {a} is logged out": "⚠ {m}：Claude 账号 {a} 已登出", "background sessions on this account can't run until you log in again": "重新登录之前，这个账号的后台会话无法运行",
+  "⚠ {m}: Claude login expires today": "⚠ {m}：Claude 登录今天到期", "⚠ {m}: Claude login expires in {n} days": "⚠ {m}：Claude 登录 {n} 天后到期",
+  "{a}: run `claude auth login` on {m}": "{a}：在 {m} 上运行 `claude auth login`",
+  "⚑ A session needs you": "⚑ 有会话在等你", "needs your reply": "需要你回复", "needs your input": "需要你处理",
+  "✓ A session finished": "✓ 有会话完成了", "finished": "已完成",
+  "{n} rule files": "{n} 个规则文件", "{n} rule files (some load only for matching paths)": "{n} 个规则文件（部分只在匹配路径时加载）",
+  "personal, not in git": "个人用，不进 git", "{i} index lines · {f} topic files": "索引 {i} 行 · 专题文件 {f} 个",
+};
+function tr(key: string, vars?: Record<string, unknown>): string {
+  const s = (LANG === "zh" && ZH[key]) || key;
+  return vars ? s.replace(/\{(\w+)\}/g, (m, k) => (k in vars ? String(vars[k]) : m)) : s;
+}
 const DATA_DIR = String(process.env.QUARTERDECK_DATA_DIR || CONFIG.dataDir || join(HOME, ".local/share/quarterdeck")).replace(/^~(?=\/|$)/, HOME);
 
 // ───────────────────────────── helpers ─────────────────────────────
@@ -540,15 +561,15 @@ function memoryLayers(dir: string, prof: Profile) {
   const file = (f: string, label: string, note?: string) => { try { const st = statSync(f); if (st.isFile()) layers.push({ label, path: short(f), bytes: st.size, note }); } catch {} };
   const countMd = (d: string): [number, number] => { let n = 0, b = 0; const walk = (x: string, depth: number) => { let es: string[] = []; try { es = readdirSync(x); } catch { return; } for (const e of es) { const q = join(x, e); try { const st = statSync(q); if (st.isDirectory() && depth < 4) walk(q, depth + 1); else if (e.endsWith(".md")) { n++; b += st.size; } } catch {} } }; walk(d, 0); return [n, b]; };
   file(join(prof.dir, "CLAUDE.md"), "global");
-  { const [n, b] = countMd(join(prof.dir, "rules")); if (n) layers.push({ label: "global rules", path: short(join(prof.dir, "rules")) + "/", bytes: b, note: `${n} rule files` }); }
+  { const [n, b] = countMd(join(prof.dir, "rules")); if (n) layers.push({ label: "global rules", path: short(join(prof.dir, "rules")) + "/", bytes: b, note: tr("{n} rule files", { n }) }); }
   const chain: string[] = []; for (let d = dir; ; d = join(d, "..")) { chain.unshift(d); if (d === "/" || chain.length > 30) break; }
   for (const d of chain) {
     const label = d === dir ? "this folder" : "parent";
-    file(join(d, "CLAUDE.md"), label); if (d !== HOME) file(join(d, ".claude", "CLAUDE.md"), label); file(join(d, "CLAUDE.local.md"), label, "personal, not in git");
-    if (d !== HOME) { const [n, b] = countMd(join(d, ".claude", "rules")); if (n) layers.push({ label: label + " rules", path: short(join(d, ".claude", "rules")) + "/", bytes: b, note: `${n} rule files (some load only for matching paths)` }); }
+    file(join(d, "CLAUDE.md"), label); if (d !== HOME) file(join(d, ".claude", "CLAUDE.md"), label); file(join(d, "CLAUDE.local.md"), label, tr("personal, not in git"));
+    if (d !== HOME) { const [n, b] = countMd(join(d, ".claude", "rules")); if (n) layers.push({ label: label + " rules", path: short(join(d, ".claude", "rules")) + "/", bytes: b, note: tr("{n} rule files (some load only for matching paths)", { n }) }); }
   }
   const mem = join(prof.dir, "projects", dir.replace(/[^a-zA-Z0-9]/g, "-"), "memory");
-  try { const idx = readFileSync(join(mem, "MEMORY.md"), "utf8"); layers.push({ label: "auto-memory", path: short(join(mem, "MEMORY.md")), bytes: idx.length, note: `${idx.split("\n").filter((l) => l.trim()).length} index lines · ${readdirSync(mem).filter((x) => x.endsWith(".md")).length - 1} topic files` }); } catch {}
+  try { const idx = readFileSync(join(mem, "MEMORY.md"), "utf8"); layers.push({ label: "auto-memory", path: short(join(mem, "MEMORY.md")), bytes: idx.length, note: tr("{i} index lines · {f} topic files", { i: idx.split("\n").filter((l) => l.trim()).length, f: readdirSync(mem).filter((x) => x.endsWith(".md")).length - 1 }) }); } catch {}
   return { dir, trust: trustOf(dir, trustedDirs(prof)), layers };
 }
 
@@ -610,8 +631,8 @@ async function waitQuiet(p: Pty, quietMs = 1200, maxMs = 10000) {
 function bgTrustError(cwd: string, prof: Profile): string | null {
   const t = trustedDirs(prof); let real = cwd; try { real = realpathSync(cwd); } catch {}
   if (trustOf(cwd, t) === "yes" || trustOf(real, t) === "yes") return null;
-  if (cwd === HOME || real === HOME) return "Background sessions can't start in your home folder: pick a project folder.";
-  return `Claude Code has not trusted ${cwd.replace(HOME, "~")} itself yet${trustOf(cwd, t) === "parent" ? " (only a folder above it is trusted, which background sessions don't accept)" : ""}. Open Claude in this folder once and accept the trust question, then start the session.`;
+  if (cwd === HOME || real === HOME) return tr("Background sessions can't start in your home folder: pick a project folder.");
+  return tr("Claude Code has not trusted {dir} itself yet", { dir: cwd.replace(HOME, "~") }) + (trustOf(cwd, t) === "parent" ? tr(" (only a folder above it is trusted, which background sessions don't accept)") : "") + tr(". Open Claude in this folder once and accept the trust question, then start the session.");
 }
 function parseBgId(code: number, text: string, prof: Profile | null = profileById()): string | null {
   if (code !== 0) return null;
@@ -888,11 +909,11 @@ function healthAlerts() {
   };
   for (const x of machines) {
     const disk = x.m?.health?.disk;
-    if (disk?.low) say(`disk:${x.id}`, `⚠ ${x.label}: disk almost full`, `${disk.freePct}% free (${disk.freeGB} GB of ${disk.totalGB} GB)`);
+    if (disk?.low) say(`disk:${x.id}`, tr("⚠ {m}: disk almost full", { m: x.label }), tr("{p}% free ({f} GB of {t} GB)", { p: disk.freePct, f: disk.freeGB, t: disk.totalGB }));
     for (const a of x.accounts) {
       const left = a.loginExpiresAt ? (Date.parse(a.loginExpiresAt) - Date.now()) / 86400_000 : Infinity;
-      if (!a.loggedIn) say(`login:${x.id}:${a.id}`, `⚠ ${x.label}: Claude account ${a.email || a.id} is logged out`, "background sessions on this account can't run until you log in again");
-      else if (left < 3) say(`login:${x.id}:${a.id}`, `⚠ ${x.label}: Claude login expires ${left < 1 ? "today" : `in ${Math.ceil(left)} days`}`, `${a.email || a.id}: run \`claude auth login\` on ${x.label}`);
+      if (!a.loggedIn) say(`login:${x.id}:${a.id}`, tr("⚠ {m}: Claude account {a} is logged out", { m: x.label, a: a.email || a.id }), tr("background sessions on this account can't run until you log in again"));
+      else if (left < 3) say(`login:${x.id}:${a.id}`, left < 1 ? tr("⚠ {m}: Claude login expires today", { m: x.label }) : tr("⚠ {m}: Claude login expires in {n} days", { m: x.label, n: Math.ceil(left) }), tr("{a}: run `claude auth login` on {m}", { a: a.email || a.id, m: x.label }));
     }
   }
 }
@@ -916,8 +937,8 @@ function watchJobs() {
     // A plug-in may take over the notification for its own sessions (e.g. a private Q&A answer: no text on the lock screen).
     if (!node && plugins.some((pl) => { try { return pl.onSessionChange?.(j, st, prev, { url, key }) === true; } catch (e: any) { console.warn(`[plugin] ${pl.name}: ${e?.message || e}`); return false; } })) continue;
     const hide = !!notifyConf().hideBody; // optional lock-screen privacy for all sessions
-    if (st === "blocked") sendAll({ title: hide ? "⚑ A session needs you" : `⚑ ${at}${j.name}`, body: hide ? "needs your reply" : (textOf(j.needs) || j.detail || "needs your input").slice(0, 300), url, tag: key });
-    else if (st === "done" && prev !== undefined && notifyConf().notifyDone !== false) sendAll({ title: hide ? "✓ A session finished" : `✓ ${at}${j.name}`, body: hide ? "finished" : (textOf(j.output) || j.detail || "finished").slice(0, 300), url, tag: key });
+    if (st === "blocked") sendAll({ title: hide ? tr("⚑ A session needs you") : `⚑ ${at}${j.name}`, body: hide ? tr("needs your reply") : (textOf(j.needs) || j.detail || tr("needs your input")).slice(0, 300), url, tag: key });
+    else if (st === "done" && prev !== undefined && notifyConf().notifyDone !== false) sendAll({ title: hide ? tr("✓ A session finished") : `✓ ${at}${j.name}`, body: hide ? tr("finished") : (textOf(j.output) || j.detail || tr("finished")).slice(0, 300), url, tag: key });
   }
   lastStates = now;
   for (const n of FLEET.nodes) if (nodeState.get(n.id)?.online) seenNodes.add(n.id);
@@ -988,6 +1009,7 @@ async function handle(req: Request, server: any): Promise<Response | undefined> 
     if (req.method !== "GET" && !sameOrigin(req)) return json({ error: "bad origin" }, 403);
     if (path === "/api/fleet") return json(fleetStatus());
     if (path === "/api/hello") return json(machineInfo());
+    if (path === "/api/ui") return json({ lang: LANG });
     if (path === "/api/plugins") return json(plugins.map((pl) => ({ name: pl.name, ui: pl.ui ? `/plugins/${pl.name}.js` : null, css: pl.css ? `/plugins/${pl.name}.css` : null })));
     if (path === "/api/projects") {
       const prof = profileById(url.searchParams.get("profile") || "default"); if (!prof) return json({ error: "unknown account" }, 400);
