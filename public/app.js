@@ -81,6 +81,27 @@ const jobState = (j) => (j.phase === "working" ? "working" : j.phase === "waitin
 // answering (transcript says working) is not waiting for you.
 const isBlocked = (j) => jobState(j) === "blocked";
 
+// ───────────── plug-ins: optional extra features loaded from the server's config ("plugins") ─────────────
+// A plug-in's browser module registers through window.QD: a block at the top of the dashboard (mounted once,
+// updated on every refresh, so a half-typed text box survives), full pages at #/<name>, buttons in a session's
+// header, and a refresh function called before the dashboard or its page renders. Its API lives under /api/p/<name>/.
+const plug = { tops: [], pages: {}, jobButtons: [], refresh: [] };
+window.QD = {
+  api, esc, md, toast, ago, short, $, poll: () => poll(),
+  dashTop: (p) => plug.tops.push(p), page: (name, p) => (plug.pages[name] = p),
+  jobButton: (fn) => plug.jobButtons.push(fn), onRefresh: (fn) => plug.refresh.push(fn),
+  rerender: () => { const v = route().view; if (v === "list") renderDash(); else if (plug.pages[v]) renderPage(v); else { if ($("#meta")) $("#meta")._sig = ""; refreshMeta(); } },
+};
+const isDashView = (v) => v === "list" || !!plug.pages[v];
+const refreshPlugins = () => Promise.all(plug.refresh.map((f) => Promise.resolve().then(f).catch((e) => console.warn(e))));
+async function loadPluginUi() {
+  let list = []; try { list = await api("/api/plugins"); } catch { return; }
+  for (const p of list) {
+    if (p.css) { const l = document.createElement("link"); l.rel = "stylesheet"; l.href = p.css; document.head.append(l); }
+    if (p.ui) try { await import(p.ui); } catch (e) { console.warn(`plug-in ${p.name}:`, e); }
+  }
+}
+
 // ───────────── state + polling + notifications ─────────────
 let data = { jobs: [], transcripts: [], tmux: [], cwds: [], ptys: [] };
 // ───────────── fleet: several machines in one page (hub forwards /n/<machine>/… to the others) ─────────────
@@ -114,7 +135,7 @@ async function poll() {
     data = mergeFleet(loc, fl);
     notifyTransitions();
     const v = route().view;
-    if (v === "list") { await loadStats(); renderDash(); } else refreshMeta();
+    if (v === "list") { await refreshPlugins(); await loadStats(); renderDash(); } else if (plug.pages[v]) { await refreshPlugins(); renderPage(v); } else refreshMeta();
     renderSide();
     const blocked = data.jobs.filter(isBlocked).length;
     document.title = blocked ? `(${blocked}) Quarterdeck` : "Quarterdeck";
@@ -257,7 +278,27 @@ let stats = null;
 async function loadStats() { try { stats = await api("/api/stats?days=14"); } catch (e) { console.warn(e); } }
 function dashSkeleton() {
   if ($("#overview")) return;
-  $("#dash").innerHTML = `<div id="dashTop" hidden></div><div id="overview"></div><div id="dashBody"></div>`;
+  $("#dash").innerHTML = `<div id="dashTop" hidden></div><div id="pluginTop"></div><div id="overview"></div><div id="dashBody"></div><div id="pluginPage" hidden></div>`;
+}
+// Dashboard vs. a plug-in's own page share #dash: show one set of blocks, hide the other.
+function dashMode(page) {
+  dashSkeleton();
+  for (const id of ["#pluginTop", "#overview", "#dashBody"]) $(id).hidden = !!page;
+  if (page) $("#dashTop").hidden = true;
+  $("#pluginPage").hidden = !page;
+}
+function renderPluginTops() {
+  const box = $("#pluginTop");
+  plug.tops.forEach((p, i) => {
+    let el = box.querySelector(`[data-pt="${i}"]`);
+    if (!el) { el = document.createElement("div"); el.dataset.pt = String(i); box.append(el); try { p.mount?.(el); } catch (e) { console.warn(e); } }
+    try { p.update?.(el); } catch (e) { console.warn(e); }
+  });
+}
+function renderPage(name) {
+  const p = plug.pages[name]; if (!p) return;
+  dashMode(true); $("#subtitle").textContent = p.title || "";
+  try { p.render($("#pluginPage")); } catch (e) { console.warn(e); }
 }
 const fmtTok = (n) => n >= 1e9 ? (n / 1e9).toFixed(1) + "B" : n >= 1e6 ? (n / 1e6).toFixed(1) + "M" : n >= 1e3 ? Math.round(n / 1e3) + "k" : String(n);
 let overviewSig = "";
@@ -365,7 +406,7 @@ function machinesBlock() {
 }
 
 function renderDash() {
-  dashSkeleton(); renderOverview();
+  dashMode(false); renderPluginTops(); renderOverview();
   const blocked = data.jobs.filter(isBlocked);
   const working = data.jobs.filter((j) => jobState(j) === "working");
   const rest = data.jobs.filter((j) => !isBlocked(j) && jobState(j) !== "working");
@@ -407,7 +448,7 @@ $("#swBtn").onclick = () => openFind();
 let lastDashView = "list";
 
 function applyLayout() {
-  const inSession = route().view !== "list";
+  const inSession = !isDashView(route().view);
   $("#side").hidden = !sideOn();
   document.body.classList.toggle("wide", wide());
   $("#back").hidden = !inSession || sideOn();
@@ -415,10 +456,14 @@ function applyLayout() {
 }
 function go() {
   teardown();
-  const r = route(); const inSession = r.view !== "list";
+  const r = route(); const inSession = !isDashView(r.view);
   $("#dash").hidden = inSession; $("#session").hidden = !inSession;
   $("#tabs").hidden = !inSession; document.body.classList.toggle("in-session", inSession); applyLayout();
-  if (!inSession) { if (r.view !== lastDashView) { $("#dash").scrollTop = 0; lastDashView = r.view; } renderSide(); $("#subtitle").textContent = ""; renderDash(); loadStats().then(renderDash); return; }
+  if (!inSession) {
+    if (r.view !== lastDashView) { $("#dash").scrollTop = 0; lastDashView = r.view; } renderSide();
+    if (plug.pages[r.view]) { renderPage(r.view); refreshPlugins().then(() => route().view === r.view && renderPage(r.view)); return; }
+    $("#subtitle").textContent = ""; renderDash(); Promise.all([loadStats(), refreshPlugins()]).then(() => route().view === "list" && renderDash()); return;
+  }
   if (r.view === "job") {
     const j = findJob(r.id, r.node);
     cur = { kind: "job", node: r.node, id: r.id, target: `job:${r.id}`, sessionId: j?.sessionId, title: j?.name || r.id };
@@ -454,14 +499,16 @@ function refreshMeta() {
     const st = jobState(j); const nt = isBlocked(j) ? needsText(j.needs) : "";
     // One row: name · state · detail · Stop (only while it is doing something) · ⋯ (full detail, folder, id, Close).
     const canStop = st === "working" || st === "blocked";
+    const extra = plug.jobButtons.flatMap((f) => { try { return f(j) || []; } catch { return []; } }); // plug-in buttons: [{ label, title?, onClick }]
     const html = `<div class="meta-row"><b class="meta-name">${esc(j.name)}</b><span class="chip ${st}">${esc(st)}</span>${hostChip(j.node)}${acctBadge(j.profile, j.node)}<span class="meta-detail">${esc(j.detail)}</span><span class="spacer"></span>
-      ${canStop ? `<button id="stopBtn" class="danger">Stop</button>` : ""}<button id="moreBtn" class="icon" title="Details and actions" aria-expanded="${!!cur.metaOpen}">⋯</button></div>
+      ${extra.map((b, i) => `<button data-pb="${i}" title="${esc(b.title || "")}">${esc(b.label)}</button>`).join("")}${canStop ? `<button id="stopBtn" class="danger">Stop</button>` : ""}<button id="moreBtn" class="icon" title="Details and actions" aria-expanded="${!!cur.metaOpen}">⋯</button></div>
       ${nt && nt !== j.detail ? `<div class="needs">⚑ ${esc(nt)}</div>` : ""}
       <div class="meta-more" ${cur.metaOpen ? "" : "hidden"}><div class="mm-detail">${esc(j.detail || j.intent || "")}</div><div class="mm-row"><span title="${esc(j.cwd)}">${esc(short(j.cwd))}</span><span>${esc(j.id)}</span><span class="spacer"></span><button id="rmBtn" title="Close and remove from the list (transcript is kept)">× Close</button></div></div>`;
     if (m._sig === html) return; m._sig = html; m.innerHTML = html; // unchanged → keep the DOM (no flicker, no lost taps)
     const toggle = () => { cur.metaOpen = !cur.metaOpen; m._sig = ""; refreshMeta(); };
     $("#moreBtn").onclick = toggle; m.querySelector(".meta-detail").onclick = toggle;
     $("#rmBtn").onclick = () => removeJob(j.id, j.node);
+    m.querySelectorAll("[data-pb]").forEach((b) => (b.onclick = () => extra[+b.dataset.pb].onClick(j)));
     if ($("#stopBtn")) $("#stopBtn").onclick = async () => { if (!confirm(`Stop session "${j.name}"? (The conversation is kept.)`)) return; try { await api(nb(j.node) + "/api/stop", { id: j.id }); toast("stopped"); poll(); } catch (e) { toast(e.message); } };
   } else if (cur.kind === "transcript") {
     m._sig = "";
@@ -951,6 +998,7 @@ addEventListener("keydown", (e) => {
 
 if ("serviceWorker" in navigator && window.isSecureContext) navigator.serviceWorker.register("/sw.js").then(refreshBell).catch(() => {});
 else refreshBell();
+await loadPluginUi(); // before the first route, so a plug-in page like #/cleanse is known
 await poll();
 go();
 setInterval(poll, 4000);

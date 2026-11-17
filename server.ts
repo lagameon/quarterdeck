@@ -100,6 +100,7 @@ async function runNow(cmd: string[], opts: RunOpts): Promise<RunResult> {
   if (p.signalCode === "SIGKILL") console.warn(`[run] ${basename(cmd[0])} ${cmd.slice(1, 3).join(" ")}: killed after ${timeoutMs} ms`);
   return { code: p.signalCode ? -1 : code ?? -1, out, err };
 }
+const plugins: Plugin[] = []; // filled at the end of startup, see "plug-ins"
 // Only for one-off calls at startup, before the server accepts requests.
 function runSync(cmd: string[], opts: RunOpts = {}): RunResult {
   const p = Bun.spawnSync(cmd, { cwd: opts.cwd, env: { ...childEnv(), ...(opts.env || {}) }, stdout: "pipe", stderr: "pipe", timeout: opts.timeoutMs ?? 15000 });
@@ -912,6 +913,8 @@ function watchJobs() {
     const st = now.get(key)!, prev = lastStates.get(key);
     const url = node ? `/#/job/${j.id}/${node.id}` : `/#/job/${j.id}`, at = node ? `[${node.label}] ` : "";
     if (st === prev) continue;
+    // A plug-in may take over the notification for its own sessions (e.g. a private Q&A answer: no text on the lock screen).
+    if (!node && plugins.some((pl) => { try { return pl.onSessionChange?.(j, st, prev, { url, key }) === true; } catch (e: any) { console.warn(`[plugin] ${pl.name}: ${e?.message || e}`); return false; } })) continue;
     const hide = !!notifyConf().hideBody; // optional lock-screen privacy for all sessions
     if (st === "blocked") sendAll({ title: hide ? "⚑ A session needs you" : `⚑ ${at}${j.name}`, body: hide ? "needs your reply" : (textOf(j.needs) || j.detail || "needs your input").slice(0, 300), url, tag: key });
     else if (st === "done" && prev !== undefined && notifyConf().notifyDone !== false) sendAll({ title: hide ? "✓ A session finished" : `✓ ${at}${j.name}`, body: hide ? "finished" : (textOf(j.output) || j.detail || "finished").slice(0, 300), url, tag: key });
@@ -937,6 +940,11 @@ const SEC_HEADERS = {
   "referrer-policy": "no-referrer", "x-content-type-options": "nosniff",
 };
 function staticFile(path: string): Response | null {
+  const pf = path.match(/^\/plugins\/([\w-]{1,32})\.(js|css)$/); // a plug-in's browser files (paths it declared itself)
+  if (pf) {
+    const pl = plugins.find((x) => x.name === pf[1]); const f = pl && (pf[2] === "js" ? pl.ui : pl.css);
+    return f && existsSync(f) ? new Response(Bun.file(f), { headers: { "content-type": pf[2] === "js" ? "text/javascript; charset=utf-8" : "text/css; charset=utf-8", "cache-control": "no-cache", ...SEC_HEADERS } }) : null;
+  }
   if (path.startsWith("/vendor/")) {
     const rel = VENDOR[path.slice(8)]; if (!rel) return null;
     return new Response(Bun.file(join(NM, rel)), { headers: { "cache-control": "max-age=86400", ...SEC_HEADERS } });
@@ -980,6 +988,7 @@ async function handle(req: Request, server: any): Promise<Response | undefined> 
     if (req.method !== "GET" && !sameOrigin(req)) return json({ error: "bad origin" }, 403);
     if (path === "/api/fleet") return json(fleetStatus());
     if (path === "/api/hello") return json(machineInfo());
+    if (path === "/api/plugins") return json(plugins.map((pl) => ({ name: pl.name, ui: pl.ui ? `/plugins/${pl.name}.js` : null, css: pl.css ? `/plugins/${pl.name}.css` : null })));
     if (path === "/api/projects") {
       const prof = profileById(url.searchParams.get("profile") || "default"); if (!prof) return json({ error: "unknown account" }, 400);
       const jobs = listJobs(); const tr = listTranscripts(40, new Set(jobs.map((j) => j.sessionId)));
@@ -1040,8 +1049,9 @@ async function handle(req: Request, server: any): Promise<Response | undefined> 
       const f = findSessionFile(url.searchParams.get("session") || "");
       return f ? json(transcriptInfo(f, basename(join(f, "..")))) : json({ error: "not found" }, 404);
     }
+    let body: any = null;
     if (req.method === "POST") {
-      const body = await req.json().catch(() => ({}));
+      body = await req.json().catch(() => ({}));
       const ref = [body.id, body.target, body.sessionId].filter((x) => typeof x === "string" && /^[\w:.\-]{1,80}$/.test(x)).join(" ");
       console.log(`[act] ${auth.who} ${path}${ref ? " " + ref : ""}`);
       if (path === "/api/push/subscribe") {
@@ -1069,6 +1079,12 @@ async function handle(req: Request, server: any): Promise<Response | undefined> 
       if (path === "/api/keys") return actKeys(body);
       if (path === "/api/stop") return actStop(body);
       if (path === "/api/rm") return actRm(body);
+    }
+    const pm = path.match(/^\/api\/p\/([\w-]{1,32})(\/.*)?$/); // a plug-in's own API: /api/p/<name>/<sub-path>
+    const pl = pm && plugins.find((x) => x.name === pm[1]);
+    if (pl?.api) {
+      try { const r = await pl.api(pm![2] || "/", { method: req.method, url, body, who: auth.who }); if (r) return r; }
+      catch (e: any) { console.warn(`[plugin] ${pl.name} ${path}: ${e?.message || e}`); return json({ error: `plug-in error: ${e?.message || e}` }, 500); }
     }
     return json({ error: "not found" }, 404);
   }
@@ -1137,6 +1153,36 @@ const websocket = {
   },
   idleTimeout: 120, sendPings: true,
 };
+
+// ───────────────────────────── plug-ins ─────────────────────────────
+// Optional features kept outside this repo (e.g. a private Q&A layer): "plugins": ["/path/to/plugin.ts"] in config.json.
+// The module's default export receives the context below and returns a Plugin. It runs with this server's full
+// rights — list only code you wrote or trust. A plug-in that fails to load is skipped (logged), never fatal.
+export type PluginCtx = {
+  run: typeof run; claudeBin: string; home: string; dataDir: string;
+  parseBgId: (code: number, text: string) => string | null;
+  listJobs: () => Job[]; jobState: (j: Job) => string; refreshJobs: () => void;
+  notify: (n: Note) => Promise<unknown>; json: typeof json; log: (msg: string) => void;
+};
+export type Plugin = {
+  name: string;                                     // [\w-], used in /api/p/<name>/ and /plugins/<name>.js|css
+  ui?: string; css?: string;                        // absolute paths of its browser module / stylesheet
+  api?: (sub: string, r: { method: string; url: URL; body: any; who: string }) => Response | undefined | Promise<Response | undefined>;
+  onSessionChange?: (j: Job, state: string, prev: string | undefined, at: { url: string; key: string }) => boolean; // true = handled, skip the default push
+};
+const pluginCtx = (name: string): PluginCtx => ({
+  run, claudeBin: CLAUDE_BIN, home: HOME, dataDir: DATA_DIR, parseBgId: (c, t) => parseBgId(c, t), listJobs, jobState: jobStateOf,
+  refreshJobs: () => { agentsCache.invalidate(); jobsSnap.at = 0; }, notify: sendAll, json, log: (m) => console.log(`[${name}] ${m}`),
+});
+for (const spec of Array.isArray(CONFIG.plugins) ? CONFIG.plugins : []) {
+  const file = expandHome(String(spec));
+  try {
+    const mod = await import(file);
+    const pl: Plugin = await mod.default(pluginCtx(basename(file)));
+    if (!pl || !/^[\w-]{1,32}$/.test(pl.name || "") || plugins.some((x) => x.name === pl.name)) throw new Error("missing, invalid or duplicate name");
+    plugins.push(pl); console.log(`[plugin] ${pl.name} (${file})`);
+  } catch (e: any) { console.error(`[plugin] could not load ${file}: ${e?.message || e}`); }
+}
 
 function tailscaleIP(): string | null {
   const r = runSync([TAILSCALE, "ip", "-4"], { timeoutMs: 5000 });

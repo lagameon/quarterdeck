@@ -71,6 +71,8 @@ Browsers only allow Web Push on HTTPS. Tailscale can provide a certificate:
 | `telegram` | — | `{ "token": "...", "chatId": "..." }` for a **dedicated** bot. |
 | `profiles` | `[]` | Extra Claude accounts: `[{ "id": "work", "dir": "~/.claude-work" }]`, see [Several accounts](#several-accounts). |
 | `diskWarnPct` | `10` | Below this much free disk space (the home folder's volume) the dashboard warns and a push goes out once a day. |
+| `plugins` | `[]` | Paths of optional plug-in modules, see [Plug-ins](#plug-ins). |
+| `dataDir` | `~/.local/share/quarterdeck` | Where the usage-stats cache is kept. |
 | `watchdogSeconds` | `45` | If the server's main thread is stuck this long, it exits so launchd / systemd starts a fresh one (`0` = off). |
 
 State lives in `~/.config/quarterdeck/` (push keys and subscriptions, mode 600) and `~/.local/share/quarterdeck/` (usage-stats cache).
@@ -116,6 +118,14 @@ Run Quarterdeck on every machine that runs Claude Code. Pick one, always-on mach
 **Updating a node:** `scripts/deploy-node.sh <ssh-host> [remote-dir] [port]` copies this checkout to the node (default `~/quarterdeck`), runs `bun install`, restarts its service (launchd `com.quarterdeck.server` or systemd `--user` unit `quarterdeck`; override with `QD_SERVICE`) and then asks the node which build it runs. It exits non-zero unless the node answers with the same build id as `bun server.ts --build-id` here.
 
 Linux nodes: see `quarterdeck.service.example` (a systemd user service; run `loginctl enable-linger $USER` so it starts without a login).
+
+## Plug-ins
+
+Features you want only for yourself (say, a private Q&A over your own notes) can live outside this repo as a plug-in, so you keep running the same Quarterdeck as everyone else. List them in `config.json`: `"plugins": ["~/my-quarterdeck-plugin/plugin.ts"]`.
+
+- **Server part:** the module's default export receives a context (`run` a command without blocking, `listJobs`, `jobState`, `notify` to send a push, `parseBgId`, `refreshJobs`, `json`, `log`) and returns `{ name, api?, onSessionChange?, ui?, css? }`. `api(subPath, { method, url, body, who })` answers requests to `/api/p/<name>/…` (same authentication and origin checks as everything else); `onSessionChange(job, state, prev)` may return `true` to replace the default push for one of its own sessions. Types: `PluginCtx` / `Plugin` in `server.ts`.
+- **Browser part:** `ui` / `css` are files the page loads from `/plugins/<name>.js|css`. The module registers through `window.QD`: `dashTop({ mount, update })` (a block at the top of the dashboard), `page(name, { title, render })` (a full page at `#/<name>`), `jobButton(job => [{ label, onClick }])` (buttons in a session's header), `onRefresh(fn)` (load data before the dashboard or a page renders), plus helpers `api`, `esc`, `md`, `toast`, `ago`, `poll`, `rerender`.
+- A plug-in runs with the server's full rights: list only code you wrote or trust. One that fails to load is skipped and logged, never fatal.
 
 ## Security model
 

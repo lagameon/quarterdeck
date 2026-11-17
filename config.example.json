@@ -17,5 +17,6 @@
     "~/Projects"
   ],
   "diskWarnPct": 10,
-  "watchdogSeconds": 45
+  "watchdogSeconds": 45,
+  "plugins": []
 }
