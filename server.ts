@@ -78,7 +78,7 @@ if (!OWNER) {
 const TAILSCALE = process.env.QUARTERDECK_TAILSCALE || CONFIG.tailscale || (process.platform === "darwin" ? "/Applications/Tailscale.app/Contents/MacOS/Tailscale" : "tailscale");
 const CLAUDE_BIN = process.env.QUARTERDECK_CLAUDE || CONFIG.claude || join(HOME, ".local/bin/claude");
 const BIND_TS = (process.env.QUARTERDECK_BIND_TS ?? (CONFIG.bindTailscale === false ? "0" : "1")) !== "0"; // also listen on the Tailscale IP
-const DATA_DIR = process.env.QUARTERDECK_DATA_DIR || CONFIG.dataDir || join(HOME, ".local/share/quarterdeck");
+const DATA_DIR = String(process.env.QUARTERDECK_DATA_DIR || CONFIG.dataDir || join(HOME, ".local/share/quarterdeck")).replace(/^~(?=\/|$)/, HOME);
 
 // ───────────────────────────── helpers ─────────────────────────────
 type RunOpts = { cwd?: string; timeoutMs?: number; env?: Record<string, string> };
