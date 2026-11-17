@@ -24,7 +24,7 @@ rsync -a --delete --exclude node_modules --exclude .git --exclude .claude "$src/
 
 ssh "$host" bash -s -- "$rdir" "$port" "$want" "${QD_SERVICE:-}" <<'REMOTE'
 set -euo pipefail
-rdir="$1"; port="$2"; want="$3"; svc="$4"
+rdir="$1"; port="$2"; want="$3"; svc="${4:-}" # ssh drops an empty argument, so $4 may not exist
 cd "$HOME" && cd "$rdir"
 bun="$(command -v bun || true)"; [ -n "$bun" ] || bun="$HOME/.bun/bin/bun"
 [ -x "$bun" ] || { echo "bun not found on $(hostname)" >&2; exit 1; }
