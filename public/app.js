@@ -72,11 +72,14 @@ const acctBadge = (id, node = "") => (multiAccount(node) ? `<span class="chip ac
 function acctOptions(selected, node = "") {
   return accountsOf(node).map((a) => `<option value="${esc(a.id)}" ${a.id === selected ? "selected" : ""} ${a.loggedIn ? "" : "disabled"}>${esc(a.email || a.id)}${a.isDefault ? " (default)" : ""}${a.loggedIn ? "" : " — not logged in"}</option>`).join("");
 }
-const isBlocked = (j) => j.tempo === "blocked" || j.state === "blocked" || (j.needs && j.state !== "done");
+const staleBlocked = (j) => j.tempo === "blocked" || j.state === "blocked" || (j.needs && j.state !== "done");
 // A resumed/attached session keeps state "done" while it generates; only tempo turns "active".
 // Prefer the transcript-derived phase (server) over the lagging state.json fields.
 const jobState = (j) => (j.phase === "working" ? "working" : j.phase === "waiting" ? "blocked"
-  : isBlocked(j) ? "blocked" : j.phase === "idle" && j.state === "working" ? "done" : j.tempo === "active" ? "working" : j.state);
+  : staleBlocked(j) ? "blocked" : j.phase === "idle" && j.state === "working" ? "done" : j.tempo === "active" ? "working" : j.state);
+// "Needs you" = the same answer jobState gives: a session state.json still calls blocked while Claude is already
+// answering (transcript says working) is not waiting for you.
+const isBlocked = (j) => jobState(j) === "blocked";
 
 // ───────────── state + polling + notifications ─────────────
 let data = { jobs: [], transcripts: [], tmux: [], cwds: [], ptys: [] };

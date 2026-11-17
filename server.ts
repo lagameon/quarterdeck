@@ -258,7 +258,15 @@ const agentsCache = swr(15_000, async () => {
   }
   return byId;
 }, new Map<string, any>());
+// One listing shared by every reader (push watcher every 2 s, each open page every 4 s, the hub every 3 s, the
+// picker…): rescanned at most once a second instead of once per caller.
+let jobsSnap = { at: 0, jobs: [] as Job[] };
 function listJobs(): Job[] {
+  if (Date.now() - jobsSnap.at < 1000) return jobsSnap.jobs;
+  jobsSnap = { at: Date.now(), jobs: scanJobs() };
+  return jobsSnap.jobs;
+}
+function scanJobs(): Job[] {
   agentsCache.get(); const agents = agentsCache.peek();
   const out: Job[] = [];
   for (const prof of PROFILES) {
@@ -315,7 +323,14 @@ function transcriptInfo(path: string, project: string): Transcript | null {
   sessionFileCache.set(sessionId, path);
   return meta;
 }
+let transcriptsSnap = { at: 0, key: "", list: [] as Transcript[] };
 function listTranscripts(limit = 40, exclude: Set<string>): Transcript[] {
+  const key = `${limit}|${[...exclude].sort().join(",")}`;
+  if (transcriptsSnap.key === key && Date.now() - transcriptsSnap.at < 2000) return transcriptsSnap.list;
+  transcriptsSnap = { at: Date.now(), key, list: scanTranscripts(limit, exclude) };
+  return transcriptsSnap.list;
+}
+function scanTranscripts(limit: number, exclude: Set<string>): Transcript[] {
   const files: { p: string; m: number; proj: string }[] = [];
   for (const root of projectRoots()) for (const proj of readdirSync(root)) {
     const dir = join(root, proj);
@@ -608,7 +623,7 @@ async function actNew(body: any) {
   if (body.model) cmd.push("--model", String(body.model));
   cmd.push("--", prompt);
   const r = await run(cmd, { cwd, timeoutMs: 60000, env: profileEnv(prof) });
-  agentsCache.invalidate();
+  agentsCache.invalidate(); jobsSnap.at = 0;
   return json({ ok: r.code === 0, id: parseBgId(r.code, r.out + r.err, prof), out: (r.out + r.err).trim().slice(0, 2000) }, r.code === 0 ? 200 : 500);
 }
 async function actResume(body: any) {
@@ -621,7 +636,7 @@ async function actResume(body: any) {
   const cmd = [CLAUDE_BIN, "--bg", "--resume", sid];
   if (body.prompt) cmd.push("--", String(body.prompt));
   const r = await run(cmd, { cwd, timeoutMs: 60000, env: profileEnv(prof) });
-  agentsCache.invalidate();
+  agentsCache.invalidate(); jobsSnap.at = 0;
   return json({ ok: r.code === 0, id: parseBgId(r.code, r.out + r.err, prof), out: (r.out + r.err).trim().slice(0, 2000) }, r.code === 0 ? 200 : 500);
 }
 async function actSend(body: any) {
@@ -646,7 +661,7 @@ async function actRm(body: any) {
   let out = "";
   if (st && st.state !== "done") out += ((await run([CLAUDE_BIN, "stop", id], { timeoutMs: 30000, env })).out + "\n");
   const p = ptys.get(`job:${id}`); if (p) { p.kill(); ptys.delete(`job:${id}`); }
-  const r = await run([CLAUDE_BIN, "rm", id], { timeoutMs: 30000, env }); agentsCache.invalidate();
+  const r = await run([CLAUDE_BIN, "rm", id], { timeoutMs: 30000, env }); agentsCache.invalidate(); jobsSnap.at = 0;
   return json({ ok: r.code === 0, out: (out + r.out + r.err).trim() }, r.code === 0 ? 200 : 500);
 }
 
@@ -689,7 +704,7 @@ async function statsApi(daysN: number) {
 
 async function actStop(body: any) {
   const id = String(body.id || ""); if (!/^[0-9a-f]{6,12}$/.test(id)) return json({ error: "bad id" }, 400);
-  const r = await run([CLAUDE_BIN, "stop", id], { timeoutMs: 30000, env: profileEnv(profileOfJob(id)) }); agentsCache.invalidate();
+  const r = await run([CLAUDE_BIN, "stop", id], { timeoutMs: 30000, env: profileEnv(profileOfJob(id)) }); agentsCache.invalidate(); jobsSnap.at = 0;
   return json({ ok: r.code === 0, out: (r.out + r.err).trim() });
 }
 
