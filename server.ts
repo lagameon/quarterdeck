@@ -4,6 +4,7 @@ import { readdirSync, statSync, existsSync, openSync, readSync, closeSync, readF
 import webpush from "web-push";
 import { Terminal as HeadlessTerm } from "@xterm/headless";
 import { parseMenu } from "./menu";
+import { startWatchdog } from "./lib/watchdog";
 import { join, basename } from "node:path";
 import { homedir, hostname as osHostname } from "node:os";
 import type { ServerWebSocket } from "bun";
@@ -38,22 +39,22 @@ function profileOfJob(id: string): Profile | null {
   return null;
 }
 // Transcript roots, de-duplicated (a profile may share ~/.claude/projects through a symlink).
-const PROJECT_ROOTS: string[] = (() => {
+// Looked up again every 30 s, not once at startup: on a fresh machine ~/.claude/projects only appears with the first
+// Claude session, and a server started before that saw no sessions at all until restarted (seen on a new node).
+let projectRootsCache = { at: 0, list: [] as string[] };
+function projectRoots(): string[] {
+  if (Date.now() - projectRootsCache.at < 30_000) return projectRootsCache.list;
   const seen = new Set<string>(); const out: string[] = [];
   for (const p of PROFILES) { const d = join(p.dir, "projects"); let r = d; try { r = realpathSync(d); } catch { continue; } if (!seen.has(r)) { seen.add(r); out.push(d); } }
+  projectRootsCache = { at: Date.now(), list: out };
   return out;
-})();
-let accountsCache: { at: number; list: any[] } = { at: 0, list: [] };
-function accountsStatus() {
-  if (Date.now() - accountsCache.at < 60_000) return accountsCache.list;
-  const list = PROFILES.map((p) => {
-    const r = run([CLAUDE_BIN, "auth", "status"], { timeoutMs: 15000, env: profileEnv(p) });
-    let d: any = {}; try { d = JSON.parse(r.out); } catch {}
-    return { id: p.id, dir: p.dir.replace(HOME, "~"), isDefault: p.isDefault, loggedIn: !!d.loggedIn, email: d.email || null, planTier: d.planTier || null, loginExpiresAt: d.loginExpiresAt || null };
-  });
-  accountsCache = { at: Date.now(), list };
-  return list;
 }
+const accounts = swr(60_000, () => Promise.all(PROFILES.map(async (p) => {
+  const r = await run([CLAUDE_BIN, "auth", "status"], { timeoutMs: 15000, env: profileEnv(p) });
+  let d: any = {}; try { d = JSON.parse(r.out); } catch {}
+  return { id: p.id, dir: p.dir.replace(HOME, "~"), isDefault: p.isDefault, loggedIn: !!d.loggedIn, email: d.email || null, planTier: d.planTier || null, loginExpiresAt: d.loginExpiresAt || null };
+})), [] as any[]);
+const accountsStatus = () => accounts.get();
 const PUBLIC = join(import.meta.dir, "public");
 const NM = join(import.meta.dir, "node_modules");
 
@@ -73,9 +74,40 @@ const BIND_TS = (process.env.QUARTERDECK_BIND_TS ?? (CONFIG.bindTailscale === fa
 const DATA_DIR = process.env.QUARTERDECK_DATA_DIR || CONFIG.dataDir || join(HOME, ".local/share/quarterdeck");
 
 // ───────────────────────────── helpers ─────────────────────────────
-function run(cmd: string[], opts: { cwd?: string; timeoutMs?: number; env?: Record<string, string> } = {}): { code: number; out: string; err: string } {
+type RunOpts = { cwd?: string; timeoutMs?: number; env?: Record<string, string> };
+type RunResult = { code: number; out: string; err: string };
+// Every external command (claude, git, tailscale, tmux) runs WITHOUT blocking: a slow or stuck one must never
+// freeze the page, the terminals or the push watcher. The timeout kills it; code -1 = failed to start / killed.
+const RUN_MAX = 8; let running = 0; const runQueue: (() => void)[] = [];
+async function run(cmd: string[], opts: RunOpts = {}): Promise<RunResult> {
+  if (running >= RUN_MAX) await new Promise<void>((r) => runQueue.push(r)); // e.g. the Changes view: up to 4 git calls per file
+  running++;
+  try { return await runNow(cmd, opts); } finally { running--; runQueue.shift()?.(); }
+}
+async function runNow(cmd: string[], opts: RunOpts): Promise<RunResult> {
+  const timeoutMs = opts.timeoutMs ?? 15000;
+  let p: ReturnType<typeof Bun.spawn>;
+  try { p = Bun.spawn(cmd, { cwd: opts.cwd, env: { ...childEnv(), ...(opts.env || {}) }, stdin: "ignore", stdout: "pipe", stderr: "pipe", timeout: timeoutMs, killSignal: "SIGKILL" }); }
+  catch (e: any) { return { code: -1, out: "", err: String(e?.message || e) }; }
+  const [out, err, code] = await Promise.all([new Response(p.stdout as ReadableStream).text(), new Response(p.stderr as ReadableStream).text(), p.exited]);
+  if (p.signalCode === "SIGKILL") console.warn(`[run] ${basename(cmd[0])} ${cmd.slice(1, 3).join(" ")}: killed after ${timeoutMs} ms`);
+  return { code: p.signalCode ? -1 : code ?? -1, out, err };
+}
+// Only for one-off calls at startup, before the server accepts requests.
+function runSync(cmd: string[], opts: RunOpts = {}): RunResult {
   const p = Bun.spawnSync(cmd, { cwd: opts.cwd, env: { ...childEnv(), ...(opts.env || {}) }, stdout: "pipe", stderr: "pipe", timeout: opts.timeoutMs ?? 15000 });
   return { code: p.exitCode ?? -1, out: p.stdout.toString(), err: p.stderr.toString() };
+}
+// Cached value refreshed in the background ("stale while revalidate"): callers get the last answer at once and
+// only the very first call waits. One refresh at a time.
+function swr<T>(maxAgeMs: number, load: () => Promise<T>, initial: T) {
+  let val = initial, at = 0, filled = false, inflight: Promise<void> | null = null;
+  const refresh = () => (inflight ||= load().then((v) => { val = v; at = Date.now(); filled = true; }, (e) => { console.warn(`[swr] ${e?.message || e}`); at = Date.now(); }).finally(() => { inflight = null; }));
+  return {
+    async get(): Promise<T> { if (!filled) await refresh(); else if (Date.now() - at > maxAgeMs) refresh(); return val; },
+    peek: () => val,
+    invalidate() { at = 0; },
+  };
 }
 function childEnv(): Record<string, string> {
   const env: Record<string, string> = { ...(process.env as Record<string, string>) };
@@ -99,7 +131,8 @@ function readTail(path: string, bytes: number): string {
 // Loopback = local user (or `tailscale serve`, which forwards identity headers).
 // Tailnet peers are checked with `tailscale whois`: must be OWNER's own, untagged device.
 const whoisCache = new Map<string, { ok: boolean; who: string; at: number }>();
-function authorize(req: Request, ip: string | undefined): { ok: boolean; who: string } {
+const whoisInflight = new Map<string, Promise<{ ok: boolean; who: string }>>();
+async function authorize(req: Request, ip: string | undefined): Promise<{ ok: boolean; who: string }> {
   if (!ip) return { ok: false, who: "?" };
   const addr = ip.replace(/^::ffff:/, "");
   if (addr === "127.0.0.1" || addr === "::1") {
@@ -118,11 +151,17 @@ function authorize(req: Request, ip: string | undefined): { ok: boolean; who: st
   }
   return whoisCheck(addr);
 }
-function whoisCheck(addr: string): { ok: boolean; who: string } {
+function whoisCheck(addr: string): Promise<{ ok: boolean; who: string }> {
   const c = whoisCache.get(addr);
-  if (c && Date.now() - c.at < 5 * 60_000) return c;
+  if (c && Date.now() - c.at < 5 * 60_000) return Promise.resolve(c);
+  // A page load fires many requests at once: they share one `tailscale whois`.
+  let p = whoisInflight.get(addr);
+  if (!p) { p = whoisLookup(addr).finally(() => whoisInflight.delete(addr)); whoisInflight.set(addr, p); }
+  return p;
+}
+async function whoisLookup(addr: string): Promise<{ ok: boolean; who: string }> {
   let res = { ok: false, who: addr, at: Date.now() };
-  const r = run([TAILSCALE, "whois", "--json", addr], { timeoutMs: 5000 });
+  const r = await run([TAILSCALE, "whois", "--json", addr], { timeoutMs: 5000 });
   if (r.code === 0) {
     try {
       const d = JSON.parse(r.out);
@@ -142,7 +181,7 @@ function whoisCheck(addr: string): { ok: boolean; who: string } {
 // talk to quarterdeck "same-origin". So the Host header must be one of quarterdeck's own names.
 const ALLOWED_HOSTS = new Set<string>(["localhost", "127.0.0.1", "[::1]", ...((CONFIG.allowedHosts || []) as string[])]);
 function learnTailscaleNames() {
-  const r = run([TAILSCALE, "status", "--json"], { timeoutMs: 5000 });
+  const r = runSync([TAILSCALE, "status", "--json"], { timeoutMs: 5000 });
   try {
     const d = JSON.parse(r.out); const self = d?.Self || {};
     for (const ip of self.TailscaleIPs || []) ALLOWED_HOSTS.add(ip.includes(":") ? `[${ip}]` : ip);
@@ -210,19 +249,17 @@ function transcriptPhase(file: string, tempo: string, sidechain = false): { phas
   if (phase === "working" && Date.now() - st.mtimeMs > 20 * 60_000 && tempo !== "active") phase = "idle";
   return { phase, at: st.mtimeMs };
 }
-let agentsCache: { at: number; byId: Map<string, any> } = { at: 0, byId: new Map() };
-function agentsInfo() {
-  if (Date.now() - agentsCache.at < 15_000) return agentsCache.byId;
+// `claude agents` only adds process ids, so it is refreshed in the background and never holds up a listing.
+const agentsCache = swr(15_000, async () => {
   const byId = new Map<string, any>();
   for (const p of PROFILES) {
-    const r = run([CLAUDE_BIN, "agents", "--json", "--all"], { timeoutMs: 15000, env: profileEnv(p) });
+    const r = await run([CLAUDE_BIN, "agents", "--json", "--all"], { timeoutMs: 15000, env: profileEnv(p) });
     try { for (const a of JSON.parse(r.out)) byId.set(a.id, a); } catch {}
   }
-  agentsCache = { at: Date.now(), byId };
   return byId;
-}
+}, new Map<string, any>());
 function listJobs(): Job[] {
-  const agents = agentsInfo();
+  agentsCache.get(); const agents = agentsCache.peek();
   const out: Job[] = [];
   for (const prof of PROFILES) {
   const jobsDir = join(prof.dir, "jobs"); if (!existsSync(jobsDir)) continue;
@@ -248,7 +285,7 @@ const sessionFileCache = new Map<string, string>();
 function findSessionFile(sessionId: string): string | null {
   if (!/^[0-9a-f-]{8,64}$/i.test(sessionId)) return null;
   const c = sessionFileCache.get(sessionId); if (c && existsSync(c)) return c;
-  for (const root of PROJECT_ROOTS) for (const proj of readdirSync(root)) {
+  for (const root of projectRoots()) for (const proj of readdirSync(root)) {
     const p = join(root, proj, `${sessionId}.jsonl`);
     if (existsSync(p)) { sessionFileCache.set(sessionId, p); return p; }
   }
@@ -280,7 +317,7 @@ function transcriptInfo(path: string, project: string): Transcript | null {
 }
 function listTranscripts(limit = 40, exclude: Set<string>): Transcript[] {
   const files: { p: string; m: number; proj: string }[] = [];
-  for (const root of PROJECT_ROOTS) for (const proj of readdirSync(root)) {
+  for (const root of projectRoots()) for (const proj of readdirSync(root)) {
     const dir = join(root, proj);
     let ents: string[] = []; try { ents = readdirSync(dir); } catch { continue; }
     for (const f of ents) {
@@ -301,8 +338,8 @@ function listTranscripts(limit = 40, exclude: Set<string>): Transcript[] {
 }
 
 type TmuxS = { kind: "tmux"; name: string; windows: number; attached: number; activity: number; path: string; command: string };
-function listTmux(): TmuxS[] {
-  const r = run(["tmux", "list-sessions", "-F", "#{session_name}\t#{session_windows}\t#{session_attached}\t#{session_activity}\t#{pane_current_path}\t#{pane_current_command}"], { timeoutMs: 3000 });
+async function listTmux(): Promise<TmuxS[]> {
+  const r = await run(["tmux", "list-sessions", "-F", "#{session_name}\t#{session_windows}\t#{session_attached}\t#{session_activity}\t#{pane_current_path}\t#{pane_current_command}"], { timeoutMs: 3000 });
   if (r.code !== 0) return [];
   return r.out.trim().split("\n").filter(Boolean).map((l) => {
     const [name, w, a, act, path, command] = l.split("\t");
@@ -570,8 +607,8 @@ async function actNew(body: any) {
   if (body.permissionMode) cmd.push("--permission-mode", String(body.permissionMode));
   if (body.model) cmd.push("--model", String(body.model));
   cmd.push("--", prompt);
-  const r = run(cmd, { cwd, timeoutMs: 60000, env: profileEnv(prof) });
-  agentsCache.at = 0;
+  const r = await run(cmd, { cwd, timeoutMs: 60000, env: profileEnv(prof) });
+  agentsCache.invalidate();
   return json({ ok: r.code === 0, id: parseBgId(r.code, r.out + r.err, prof), out: (r.out + r.err).trim().slice(0, 2000) }, r.code === 0 ? 200 : 500);
 }
 async function actResume(body: any) {
@@ -583,8 +620,8 @@ async function actResume(body: any) {
   const untrusted = bgTrustError(cwd, prof); if (untrusted) return json({ error: untrusted, trust: "no" }, 409);
   const cmd = [CLAUDE_BIN, "--bg", "--resume", sid];
   if (body.prompt) cmd.push("--", String(body.prompt));
-  const r = run(cmd, { cwd, timeoutMs: 60000, env: profileEnv(prof) });
-  agentsCache.at = 0;
+  const r = await run(cmd, { cwd, timeoutMs: 60000, env: profileEnv(prof) });
+  agentsCache.invalidate();
   return json({ ok: r.code === 0, id: parseBgId(r.code, r.out + r.err, prof), out: (r.out + r.err).trim().slice(0, 2000) }, r.code === 0 ? 200 : 500);
 }
 async function actSend(body: any) {
@@ -600,16 +637,16 @@ function actKeys(body: any) {
   const p = getPty(String(body.target || "")); if (!p) return json({ error: "bad target" }, 400);
   p.write(String(body.data || "")); return json({ ok: true });
 }
-function actRm(body: any) {
+async function actRm(body: any) {
   // "×" in the UI: remove a background session from the list. `claude rm` keeps the transcript, so the
   // conversation stays resumable from "Interactive sessions". A running session is stopped first.
   const id = String(body.id || ""); if (!/^[0-9a-f]{6,12}$/.test(id)) return json({ error: "bad id" }, 400);
   const prof = profileOfJob(id); const env = profileEnv(prof);
   const st = prof ? readJson(join(prof.dir, "jobs", id, "state.json")) : null;
   let out = "";
-  if (st && st.state !== "done") out += (run([CLAUDE_BIN, "stop", id], { timeoutMs: 30000, env }).out + "\n");
+  if (st && st.state !== "done") out += ((await run([CLAUDE_BIN, "stop", id], { timeoutMs: 30000, env })).out + "\n");
   const p = ptys.get(`job:${id}`); if (p) { p.kill(); ptys.delete(`job:${id}`); }
-  const r = run([CLAUDE_BIN, "rm", id], { timeoutMs: 30000, env }); agentsCache.at = 0;
+  const r = await run([CLAUDE_BIN, "rm", id], { timeoutMs: 30000, env }); agentsCache.invalidate();
   return json({ ok: r.code === 0, out: (out + r.out + r.err).trim() }, r.code === 0 ? 200 : 500);
 }
 
@@ -650,9 +687,9 @@ async function statsApi(daysN: number) {
   return { ready: true, updatedAt: c.updatedAt, days, top, quota: await quotaStatus() };
 }
 
-function actStop(body: any) {
+async function actStop(body: any) {
   const id = String(body.id || ""); if (!/^[0-9a-f]{6,12}$/.test(id)) return json({ error: "bad id" }, 400);
-  const r = run([CLAUDE_BIN, "stop", id], { timeoutMs: 30000, env: profileEnv(profileOfJob(id)) }); agentsCache.at = 0;
+  const r = await run([CLAUDE_BIN, "stop", id], { timeoutMs: 30000, env: profileEnv(profileOfJob(id)) }); agentsCache.invalidate();
   return json({ ok: r.code === 0, out: (r.out + r.err).trim() });
 }
 
@@ -661,12 +698,12 @@ function actStop(body: any) {
 // its current git diff vs HEAD. Session-scoped on purpose: many sessions share one dirty tree.
 const EDIT_TOOLS = new Set(["Edit", "Write", "MultiEdit", "NotebookEdit"]);
 const repoRootCache = new Map<string, string | null>();
-function repoRoot(dir: string): string | null {
+async function repoRoot(dir: string): Promise<string | null> {
   if (repoRootCache.has(dir)) return repoRootCache.get(dir)!;
-  const r = run(["git", "-C", dir, "rev-parse", "--show-toplevel"], { timeoutMs: 5000 });
+  const r = await run(["git", "-C", dir, "rev-parse", "--show-toplevel"], { timeoutMs: 5000 });
   const root = r.code === 0 ? r.out.trim() : null; repoRootCache.set(dir, root); return root;
 }
-function sessionChanges(sessionId: string) {
+async function sessionChanges(sessionId: string) {
   const file = findSessionFile(sessionId); if (!file) return null;
   const touched = new Map<string, { last: string; tool: string; n: number }>();
   let started = "";
@@ -680,13 +717,13 @@ function sessionChanges(sessionId: string) {
       const t = touched.get(p); touched.set(p, { last: d.timestamp || "", tool: b.name, n: (t?.n || 0) + 1 });
     }
   }
-  const files = [...touched.entries()].sort((a, b) => b[1].last.localeCompare(a[1].last)).slice(0, 80).map(([path, info]) => {
+  const files = await Promise.all([...touched.entries()].sort((a, b) => b[1].last.localeCompare(a[1].last)).slice(0, 80).map(async ([path, info]) => {
     const exists = existsSync(path);
     const dir = join(path, "..");
-    const root = existsSync(dir) ? repoRoot(dir) : null;
+    const root = existsSync(dir) ? await repoRoot(dir) : null;
     let status = exists ? "" : "deleted", diff = "", add = 0, del = 0;
     if (root) {
-      const st = run(["git", "-C", root, "status", "--porcelain=v1", "--", path], { timeoutMs: 5000 }).out.trim();
+      const st = (await run(["git", "-C", root, "status", "--porcelain=v1", "--", path], { timeoutMs: 5000 })).out.trim();
       status = st.slice(0, 2).trim() || (exists ? "clean" : "deleted");
       if (status === "??") {
         status = "new"; try { const c = readFileSync(path, "utf8"); diff = c.slice(0, 30000).split("\n").map((l) => "+" + l).join("\n"); add = c.split("\n").length; } catch {}
@@ -694,16 +731,16 @@ function sessionChanges(sessionId: string) {
         let base = "HEAD";
         if (status === "clean" && started) {
           // Already committed: diff from just before the first commit this session made to the file.
-          const shas = run(["git", "-C", root, "log", `--since=${started}`, "--format=%H", "--", path], { timeoutMs: 8000 }).out.trim().split("\n").filter(Boolean);
+          const shas = (await run(["git", "-C", root, "log", `--since=${started}`, "--format=%H", "--", path], { timeoutMs: 8000 })).out.trim().split("\n").filter(Boolean);
           if (shas.length) { base = `${shas.at(-1)}^`; status = "committed"; }
         }
-        if (status !== "clean") diff = run(["git", "-C", root, "diff", base, "--no-color", "--", path], { timeoutMs: 8000 }).out;
+        if (status !== "clean") diff = (await run(["git", "-C", root, "diff", base, "--no-color", "--", path], { timeoutMs: 8000 })).out;
         for (const l of diff.split("\n")) { if (l.startsWith("+") && !l.startsWith("+++")) add++; else if (l.startsWith("-") && !l.startsWith("---")) del++; }
         if (diff.length > 60000) diff = diff.slice(0, 60000) + "\n… [diff truncated]";
       }
     } else status = exists ? "not in git" : "deleted";
     return { path, rel: root ? path.slice(root.length + 1) : path.replace(HOME, "~"), repo: root ? basename(root) : null, ...info, status, add, del, diff };
-  });
+  }));
   return { files };
 }
 
@@ -866,7 +903,7 @@ function staticFile(path: string): Response | null {
 async function handle(req: Request, server: any): Promise<Response | undefined> {
   if (!hostAllowed(req)) return new Response("forbidden: unknown Host header (add it to allowedHosts in config.json)\n", { status: 403 });
   const ip = server.requestIP(req)?.address;
-  const auth = authorize(req, ip);
+  const auth = await authorize(req, ip);
   if (!auth.ok) return new Response("forbidden: not an authorised Tailscale identity\n", { status: 403 });
   const url = new URL(req.url); const path = url.pathname;
   const viaNode = path.match(/^\/n\/([\w-]{1,24})(\/(?:api|ws)\/.*)$/); // another machine, same checks on the inner path
@@ -908,9 +945,9 @@ async function handle(req: Request, server: any): Promise<Response | undefined> 
       const jobs = listJobs();
       const jobSids = new Set(jobs.map((j) => j.sessionId));
       const transcripts = listTranscripts(Number(url.searchParams.get("limit") || 40), jobSids);
-      const tmux = listTmux();
+      const tmux = await listTmux();
       const cwds = [...new Set([...jobs.map((j) => j.cwd), ...transcripts.map((t) => t.cwd)].filter(Boolean))].slice(0, 25);
-      return json({ jobs, transcripts, tmux, cwds, ptys: [...ptys.keys()], accounts: accountsStatus(), who: auth.who, now: Date.now() });
+      return json({ jobs, transcripts, tmux, cwds, ptys: [...ptys.keys()], accounts: await accountsStatus(), who: auth.who, now: Date.now() });
     }
     if (path === "/api/job") {
       const id = url.searchParams.get("id") || "";
@@ -920,7 +957,7 @@ async function handle(req: Request, server: any): Promise<Response | undefined> 
     if (path === "/api/stats") return json(await statsApi(Math.min(31, Math.max(7, Number(url.searchParams.get("days")) || 14))));
     if (path === "/api/push/key") return json({ publicKey: vapid.publicKey, devices: subs.map((x) => ({ label: x.label, at: x.at, endpoint: x.subscription.endpoint.slice(0, 60) })), telegram: !!notifyConf().telegram?.token });
     if (path === "/api/changes") {
-      const c = sessionChanges(url.searchParams.get("session") || "");
+      const c = await sessionChanges(url.searchParams.get("session") || "");
       return c ? json(c) : json({ error: "not found" }, 404);
     }
     if (path === "/api/subagent") {
@@ -996,11 +1033,11 @@ function authPeer(req: Request, ip?: string): string | undefined {
   const peer = fwd.split(",").map((x) => x.trim()).filter(Boolean).pop();
   return peer && peer !== "127.0.0.1" && peer !== "::1" ? peer : undefined;
 }
-setInterval(() => {
+setInterval(async () => {
   whoisCache.clear();
   for (const ws of openSockets) {
     const peer = ws.data.peer; if (!peer) continue;
-    if (!whoisCheck(peer).ok) { console.warn(`[auth] closing connection from ${peer}: no longer authorised`); try { ws.close(1008, "unauthorised"); } catch {} }
+    if (!(await whoisCheck(peer)).ok) { console.warn(`[auth] closing connection from ${peer}: no longer authorised`); try { ws.close(1008, "unauthorised"); } catch {} }
   }
 }, 5 * 60_000);
 
@@ -1052,7 +1089,7 @@ const websocket = {
 };
 
 function tailscaleIP(): string | null {
-  const r = run([TAILSCALE, "ip", "-4"], { timeoutMs: 5000 });
+  const r = runSync([TAILSCALE, "ip", "-4"], { timeoutMs: 5000 });
   const ip = r.out.trim().split("\n")[0]; return /^100\./.test(ip) ? ip : null;
 }
 const hosts = ["127.0.0.1"]; if (BIND_TS) { const ip = tailscaleIP(); if (ip) hosts.push(ip); else console.warn("[quarterdeck] no Tailscale IP; loopback only"); }
@@ -1060,3 +1097,6 @@ for (const hostname of hosts) {
   Bun.serve({ hostname, port: PORT, fetch: handle as any, websocket: websocket as any });
   console.log(`[quarterdeck] listening http://${hostname}:${PORT}  (owner=${OWNER})`);
 }
+// "watchdogSeconds" in config.json (default 45, 0 = off): a main thread stuck that long gets the process restarted.
+const WATCHDOG_S = Number(process.env.QUARTERDECK_WATCHDOG ?? CONFIG.watchdogSeconds ?? 45);
+if (startWatchdog(WATCHDOG_S)) console.log(`[quarterdeck] watchdog: restart if unresponsive for ${WATCHDOG_S} s`);
