@@ -70,6 +70,8 @@ Browsers only allow Web Push on HTTPS. Tailscale can provide a certificate:
 | `quotaUrl` | — | Optional quota endpoint, see below. |
 | `telegram` | — | `{ "token": "...", "chatId": "..." }` for a **dedicated** bot. |
 | `profiles` | `[]` | Extra Claude accounts: `[{ "id": "work", "dir": "~/.claude-work" }]`, see [Several accounts](#several-accounts). |
+| `diskWarnPct` | `10` | Below this much free disk space (the home folder's volume) the dashboard warns and a push goes out once a day. |
+| `watchdogSeconds` | `45` | If the server's main thread is stuck this long, it exits so launchd / systemd starts a fresh one (`0` = off). |
 
 State lives in `~/.config/quarterdeck/` (push keys and subscriptions, mode 600) and `~/.local/share/quarterdeck/` (usage-stats cache).
 
@@ -109,6 +111,9 @@ Run Quarterdeck on every machine that runs Claude Code. Pick one, always-on mach
 - Each node still authorises the hub itself: the hub's request comes from the hub's own Tailscale address, so `tailscale whois` must resolve it to `owner`'s own, untagged device. Nothing else is shared between machines: no keys, no tokens.
 - A machine that is asleep or offline shows a banner; its sessions are listed as last seen, and actions on them fail until it is back. When it comes back, nothing that was already waiting is re-announced.
 - The overview's token statistics are the hub's own machine only.
+- The dashboard shows one line per machine: free disk, load, memory (Linux), GPU (`nvidia-smi`), Claude Code version and login expiry. It warns when a node runs an older Quarterdeck than the hub expects, when disk space is low and when a Claude login is gone or expires within 7 days (the last two also as a daily push).
+
+**Updating a node:** `scripts/deploy-node.sh <ssh-host> [remote-dir] [port]` copies this checkout to the node (default `~/quarterdeck`), runs `bun install`, restarts its service (launchd `com.quarterdeck.server` or systemd `--user` unit `quarterdeck`; override with `QD_SERVICE`) and then asks the node which build it runs. It exits non-zero unless the node answers with the same build id as `bun server.ts --build-id` here.
 
 Linux nodes: see `quarterdeck.service.example` (a systemd user service; run `loginctl enable-linger $USER` so it starts without a login).
 
