@@ -449,7 +449,9 @@ function trustedDirs(prof: Profile): string[] {
   const dirs = Object.keys(pr).filter((k) => pr[k]?.hasTrustDialogAccepted);
   trustCache = { at: Date.now(), key: f, dirs }; return dirs;
 }
-// Trust covers a folder and its subfolders; the home folder itself never counts (Claude trusts it one session at a time).
+// Background sessions (`claude --bg`) accept ONLY a trust entry for the exact folder: a trusted parent is not enough
+// (tested 2026-11). "parent" is reported for information; anything but "yes" means "can't start here yet".
+// The home folder itself never counts (Claude trusts it one session at a time).
 const trustOf = (dir: string, t: string[]) => (t.includes(dir) && dir !== HOME ? "yes" : t.some((x) => x !== HOME && dir.startsWith(x + "/")) ? "parent" : "no");
 function listProjects(prof: Profile, recent: string[]) {
   const conf = readJson(join(CONF_DIR, "config.json")) || {};
@@ -544,6 +546,13 @@ async function waitQuiet(p: Pty, quietMs = 1200, maxMs = 10000) {
 
 
 // ───────────────────────────── actions ─────────────────────────────
+// Refuse up front instead of letting `claude --bg` fail with "Workspace not trusted" after a long wait.
+function bgTrustError(cwd: string, prof: Profile): string | null {
+  const t = trustedDirs(prof); let real = cwd; try { real = realpathSync(cwd); } catch {}
+  if (trustOf(cwd, t) === "yes" || trustOf(real, t) === "yes") return null;
+  if (cwd === HOME || real === HOME) return "Background sessions can't start in your home folder: pick a project folder.";
+  return `Claude Code has not trusted ${cwd.replace(HOME, "~")} itself yet${trustOf(cwd, t) === "parent" ? " (only a folder above it is trusted, which background sessions don't accept)" : ""}. Open Claude in this folder once and accept the trust question, then start the session.`;
+}
 function parseBgId(code: number, text: string, prof: Profile | null = profileById()): string | null {
   if (code !== 0) return null;
   const jobsDir = join((prof || PROFILES[0]).dir, "jobs");
@@ -555,6 +564,7 @@ async function actNew(body: any) {
   const cwd = String(body.cwd || HOME); if (!existsSync(cwd)) return json({ error: `cwd not found: ${cwd}` }, 400);
   const prompt = String(body.prompt || "").trim(); if (!prompt) return json({ error: "prompt required" }, 400);
   const prof = profileById(body.profile); if (!prof) return json({ error: "unknown account" }, 400);
+  const untrusted = bgTrustError(cwd, prof); if (untrusted) return json({ error: untrusted, trust: "no" }, 409);
   const cmd = [CLAUDE_BIN, "--bg"];
   if (body.name) cmd.push("-n", String(body.name).slice(0, 80));
   if (body.permissionMode) cmd.push("--permission-mode", String(body.permissionMode));
@@ -570,6 +580,7 @@ async function actResume(body: any) {
   const meta = transcriptInfo(file, basename(join(file, "..")));
   const cwd = meta?.cwd && existsSync(meta.cwd) ? meta.cwd : HOME;
   const prof = profileById(body.profile); if (!prof) return json({ error: "unknown account" }, 400);
+  const untrusted = bgTrustError(cwd, prof); if (untrusted) return json({ error: untrusted, trust: "no" }, 409);
   const cmd = [CLAUDE_BIN, "--bg", "--resume", sid];
   if (body.prompt) cmd.push("--", String(body.prompt));
   const r = run(cmd, { cwd, timeoutMs: 60000, env: profileEnv(prof) });

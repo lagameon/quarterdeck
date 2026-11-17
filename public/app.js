@@ -851,7 +851,7 @@ async function loadProjects() {
 function renderProjects() {
   const q = $("#newProjFilter").value.trim().toLowerCase(), cwd = $("#newCwd").value.trim();
   const rows = newProj.list.filter((x) => !q || x.path.toLowerCase().includes(q));
-  $("#newProjList").innerHTML = rows.map((x) => `<button type="button" class="pj ${x.path === cwd ? "on" : ""}" data-p="${esc(x.path)}"><b>${esc(x.name)}</b><span class="pjp">${esc(short(x.path))}</span>${x.src === "recent" ? `<span class="pb rc">recent</span>` : ""}${x.claudeMd ? `<span class="pb md" title="has its own CLAUDE.md">CLAUDE.md</span>` : ""}${x.git ? `<span class="pb">git</span>` : ""}${x.trust === "no" ? `<span class="pb warn" title="not trusted yet">untrusted</span>` : ""}</button>`).join("")
+  $("#newProjList").innerHTML = rows.map((x) => `<button type="button" class="pj ${x.path === cwd ? "on" : ""}" data-p="${esc(x.path)}"><b>${esc(x.name)}</b><span class="pjp">${esc(short(x.path))}</span>${x.src === "recent" ? `<span class="pb rc">recent</span>` : ""}${x.claudeMd ? `<span class="pb md" title="has its own CLAUDE.md">CLAUDE.md</span>` : ""}${x.git ? `<span class="pb">git</span>` : ""}${x.trust !== "yes" ? `<span class="pb warn" title="${x.trust === "parent" ? "only a folder above it is trusted; background sessions need this folder itself" : "not trusted yet"}">untrusted</span>` : ""}</button>`).join("")
     || `<div class="empty">no match: type the folder below</div>`;
   $("#newProjList").querySelectorAll(".pj").forEach((b) => (b.onclick = () => { $("#newCwd").value = b.dataset.p; renderProjects(); loadMemory(); }));
 }
@@ -865,7 +865,7 @@ async function loadMemory() {
     el.innerHTML = `<div class="mm-h">Memory this session loads, top to bottom</div>` +
       m.layers.map((l) => `<div class="ml"><span class="mlk">${esc(l.label)}</span><span class="mlp">${pathHtml(l.path)}</span><span class="mls">${kb(l.bytes)}</span>${l.note ? `<div class="mln">${esc(l.note)}</div>` : ""}</div>`).join("") +
       (m.layers.length ? "" : `<div class="mln">no CLAUDE.md or memory files for this folder</div>`) +
-      (m.trust === "no" ? `<div class="mtrust">⚠ Not trusted yet: a background session can't start here until Claude Code trusts this folder. <button type="button" id="trustBtn">Open Claude here to trust it</button></div>` : "");
+      (m.trust !== "yes" ? `<div class="mtrust">⚠ Not trusted yet: a background session can't start here until Claude Code trusts this folder itself${m.trust === "parent" ? " (a folder above it is trusted, but that doesn't count for background sessions)" : ""}. <button type="button" id="trustBtn">Open Claude here to trust it</button></div>` : "");
     if ($("#trustBtn")) $("#trustBtn").onclick = () => { $("#newDlg").close("cancel"); location.hash = `#/here/${encodeURIComponent(prof + ":" + dir)}${node ? "/" + node : ""}`; };
   } catch (e) { el.innerHTML = `<div class="mtrust">${esc(e.message)}</div>`; }
 }
