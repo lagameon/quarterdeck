@@ -34,6 +34,13 @@ got_files="$("$bun" server.ts --build-id)"
 if [ "$(uname)" = Darwin ]; then
   launchctl kickstart -k "gui/$(id -u)/${svc:-com.quarterdeck.server}"
 else
+  # With systemd's default KillMode a restart also kills the Claude daemon Quarterdeck may have started, i.e. every
+  # background session on this machine. Refuse rather than interrupt running work.
+  km="$(systemctl --user show "${svc:-quarterdeck}" -p KillMode --value)"
+  if [ "$km" != process ]; then
+    echo "✗ $(hostname): service has KillMode=$km — a restart would kill running Claude sessions. Add 'KillMode=process' under [Service] (see quarterdeck.service.example), run 'systemctl --user daemon-reload', then deploy again. Files are copied; nothing was restarted." >&2
+    exit 1
+  fi
   systemctl --user restart "${svc:-quarterdeck}"
 fi
 for i in $(seq 1 30); do
