@@ -13,6 +13,9 @@ ExecStart=/home/you/.bun/bin/bun /home/you/quarterdeck/server.ts
 Environment=PATH=/home/you/.local/bin:/home/you/.bun/bin:/usr/local/bin:/usr/bin:/bin
 Restart=always
 RestartSec=10
+# Required: restarting Quarterdeck must not kill what it started. Opening a session can start the Claude daemon,
+# which runs ALL background sessions; with systemd's default (control-group) a restart or update kills them mid-work.
+KillMode=process
 
 [Install]
 WantedBy=default.target

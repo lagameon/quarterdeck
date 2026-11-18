@@ -118,7 +118,7 @@ Run Quarterdeck on every machine that runs Claude Code. Pick one, always-on mach
 
 **Updating a node:** `scripts/deploy-node.sh <ssh-host> [remote-dir] [port]` copies this checkout to the node (default `~/quarterdeck`), runs `bun install`, restarts its service (launchd `com.quarterdeck.server` or systemd `--user` unit `quarterdeck`; override with `QD_SERVICE`) and then asks the node which build it runs. It exits non-zero unless the node answers with the same build id as `bun server.ts --build-id` here.
 
-Linux nodes: see `quarterdeck.service.example` (a systemd user service; run `loginctl enable-linger $USER` so it starts without a login).
+Linux nodes: see `quarterdeck.service.example` (a systemd user service; run `loginctl enable-linger $USER` so it starts without a login). Keep its `KillMode=process`: with systemd's default, restarting or updating Quarterdeck also kills the Claude daemon it may have started, and with it every background session on that machine.
 
 ## Plug-ins
 
