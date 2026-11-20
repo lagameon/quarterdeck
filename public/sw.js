@@ -1,6 +1,35 @@
-// Quarterdeck service worker: shows server-sent pushes, opens the session on tap. Never caches.
+// Quarterdeck service worker: shows server-sent pushes and opens the session on tap; keeps a copy of the page's own
+// files (never data) so the app opens at once on a slow link.
+const SHELL = "qd-shell-v1";
+// Only the page itself: HTML, scripts, styles, icons, vendor and plug-in files. Never /api/ or /ws/.
+const isShell = (u) => u.origin === self.location.origin && (u.pathname === "/" || /^\/(app\.js|i18n\.js|style\.css|manifest\.webmanifest|icon[\w.-]*|vendor\/[\w.-]+|plugins\/[\w.-]+)$/.test(u.pathname));
 self.addEventListener("install", () => self.skipWaiting());
-self.addEventListener("activate", (e) => e.waitUntil(self.clients.claim()));
+self.addEventListener("activate", (e) => e.waitUntil((async () => {
+  for (const k of await caches.keys()) if (k.startsWith("qd-shell-") && k !== SHELL) await caches.delete(k);
+  await self.clients.claim();
+})()));
+// Stale-while-revalidate: answer from the copy at once, fetch the current file in the background; when a file has
+// changed, tell the page so it can offer a reload. Any failure falls back to the plain network.
+self.addEventListener("fetch", (e) => {
+  const req = e.request; if (req.method !== "GET") return;
+  let u; try { u = new URL(req.url); } catch { return; }
+  if (!isShell(u)) return;
+  e.respondWith((async () => {
+    try {
+      const cache = await caches.open(SHELL); const key = u.pathname;
+      const hit = await cache.match(key);
+      const refresh = fetch(req.url, { cache: "no-cache", credentials: "same-origin" }).then(async (res) => {
+        if (!res.ok || res.type !== "basic") return res;
+        const changed = hit && hit.headers.get("etag") && res.headers.get("etag") && hit.headers.get("etag") !== res.headers.get("etag");
+        await cache.put(key, res.clone());
+        if (changed && /^\/($|app\.js|i18n\.js|style\.css|plugins\/)/.test(u.pathname)) for (const c of await self.clients.matchAll({ type: "window" })) c.postMessage({ t: "updated" });
+        return res;
+      });
+      if (hit) { e.waitUntil(refresh.catch(() => {})); return hit; }
+      return await refresh;
+    } catch { return fetch(req); }
+  })());
+});
 self.addEventListener("push", (e) => {
   let d = {}; try { d = e.data ? e.data.json() : {}; } catch { d = { title: "Quarterdeck", body: e.data && e.data.text() }; }
   e.waitUntil(self.registration.showNotification(d.title || "Quarterdeck", {

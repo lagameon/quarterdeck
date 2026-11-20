@@ -978,6 +978,34 @@ function staticFile(path: string): Response | null {
 }
 
 // ───────────────────────────── server ─────────────────────────────
+// ───────────────────────────── slow links: compress, and don't resend what the browser already has ─────────────────────────────
+// Over a relayed Tailscale link or a phone network the cost is bytes and round trips, not server time. Every text
+// response (pages, scripts, JSON) gets an ETag and is gzipped; a request that already holds the current version
+// (If-None-Match) gets an empty 304. For the polled listings the tag ignores fields that change on every call
+// (clocks), so an unchanged dashboard costs ~100 bytes per poll instead of ~90 KB.
+const TEXT_TYPES = /^(text\/|application\/(json|javascript|manifest\+json)|image\/svg)/;
+const gzCache = new Map<string, Uint8Array>(); // etag → gzipped body, for the static files (re-used across requests)
+async function finalize(req: Request, res: Response | undefined): Promise<Response | undefined> {
+  if (!res || req.method !== "GET" || res.status !== 200 || res.headers.has("content-encoding")) return res;
+  let type = res.headers.get("content-type") || "";
+  const path = new URL(req.url).pathname;
+  if (!type) type = /\.(m?js)$/.test(path) ? "text/javascript; charset=utf-8" : /\.css$/.test(path) ? "text/css; charset=utf-8" : /\.(html)$|^\/$/.test(path) ? "text/html; charset=utf-8" : "";
+  if (!TEXT_TYPES.test(type)) return res;
+  const body = new Uint8Array(await res.arrayBuffer());
+  const isApi = path.includes("/api/");
+  // Clock-like fields must not defeat the tag: "now", a node's "lastOk"/"at", health sample time.
+  const stable = isApi ? new TextDecoder().decode(body).replace(/"(now|lastOk|at|startedAt)":\d+,?/g, "") : body;
+  const etag = `"${Bun.hash(stable).toString(36)}"`;
+  const headers = new Headers(res.headers); headers.set("etag", etag); headers.set("vary", "Accept-Encoding"); headers.set("content-type", type);
+  if (req.headers.get("if-none-match") === etag) { headers.delete("content-length"); return new Response(null, { status: 304, headers }); }
+  if (body.length < 1024 || !/\bgzip\b/.test(req.headers.get("accept-encoding") || "")) return new Response(body, { status: 200, headers });
+  let gz = isApi ? undefined : gzCache.get(etag);
+  if (!gz) { gz = Bun.gzipSync(body, { level: isApi ? 4 : 9 }); if (!isApi) { if (gzCache.size > 64) gzCache.clear(); gzCache.set(etag, gz); } }
+  headers.set("content-encoding", "gzip"); headers.delete("content-length");
+  return new Response(gz, { status: 200, headers });
+}
+const serve = async (req: Request, server: any) => finalize(req, await handle(req, server));
+
 async function handle(req: Request, server: any): Promise<Response | undefined> {
   if (!hostAllowed(req)) return new Response("forbidden: unknown Host header (add it to allowedHosts in config.json)\n", { status: 403 });
   const ip = server.requestIP(req)?.address;
@@ -1173,7 +1201,7 @@ const websocket = {
     else if (d.kind === "proxy") { try { d.up?.close(); } catch {} }
     else if (d.timer) clearInterval(d.timer);
   },
-  idleTimeout: 120, sendPings: true,
+  idleTimeout: 120, sendPings: true, perMessageDeflate: true,
 };
 
 // ───────────────────────────── plug-ins ─────────────────────────────
@@ -1212,7 +1240,7 @@ function tailscaleIP(): string | null {
 }
 const hosts = ["127.0.0.1"]; if (BIND_TS) { const ip = tailscaleIP(); if (ip) hosts.push(ip); else console.warn("[quarterdeck] no Tailscale IP; loopback only"); }
 for (const hostname of hosts) {
-  Bun.serve({ hostname, port: PORT, fetch: handle as any, websocket: websocket as any });
+  Bun.serve({ hostname, port: PORT, fetch: serve as any, websocket: websocket as any });
   console.log(`[quarterdeck] listening http://${hostname}:${PORT}  (owner=${OWNER})`);
 }
 console.log(`[quarterdeck] build ${BUILD} (protocol ${PROTOCOL})`);

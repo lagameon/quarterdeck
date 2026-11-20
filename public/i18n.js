@@ -100,6 +100,7 @@ const zh = {
   "⚠ Not trusted yet: a background session can't start here until Claude Code trusts this folder itself": "⚠ 尚未信任：Claude Code 信任这个文件夹本身之前，后台会话不能在这里启动",
   " (a folder above it is trusted, but that doesn't count for background sessions)": "（上级文件夹被信任，但对后台会话不算数）",
   "Open Claude here to trust it": "在这里打开 Claude 来信任它", "no match": "没有匹配",
+  "updating…": "更新中…", "A new version is ready — tap to reload": "有新版本——点这里刷新",
   "global": "全局", "global rules": "全局规则", "parent": "上级", "parent rules": "上级规则", "this folder": "本文件夹", "this folder rules": "本文件夹规则", "auto-memory": "自动记忆",
 };
 const DICT = { en: {}, zh };

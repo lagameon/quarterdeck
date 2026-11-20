@@ -20,6 +20,13 @@ const md = (s) => DOMPurify.sanitize(marked.parse(String(s ?? ""), { breaks: tru
 const wide = () => innerWidth >= 900;
 // The session sidebar fits from iPad-portrait width up (narrower than the two-column dashboard).
 const sideOn = () => innerWidth >= 760;
+// A newer version of the page was fetched in the background (service worker): offer it, never reload on our own.
+// Registered first thing — the notice can arrive while the page is still starting.
+let updateSeen = false;
+navigator.serviceWorker?.addEventListener("message", (e) => {
+  if (e.data?.t !== "updated" || updateSeen) return; updateSeen = true;
+  setTimeout(() => toast(t("A new version is ready — tap to reload"), 20000, { href: location.hash || "#", kind: "done", reload: true }), 1500);
+});
 const store = { get: (k) => { try { return localStorage.getItem(k); } catch { return null; } }, set: (k, v) => { try { localStorage.setItem(k, v); } catch {} } };
 
 function ago(t) {
@@ -38,15 +45,22 @@ function toast(msg, ms = 2500, opts = {}) {
   el.innerHTML = `<span class="tmsg"></span>${opts.href ? `<button class="tx" aria-label="Dismiss">×</button>` : ""}`;
   el.querySelector(".tmsg").textContent = msg;
   const close = () => { el.classList.remove("on"); setTimeout(() => el.remove(), 200); };
-  if (opts.href) el.onclick = (e) => { if (!e.target.closest(".tx")) location.hash = opts.href; close(); };
+  if (opts.href) el.onclick = (e) => { if (!e.target.closest(".tx")) { if (opts.reload) return location.reload(); location.hash = opts.href; } close(); };
   box.prepend(el); while (box.children.length > 3) box.lastElementChild.remove();
   requestAnimationFrame(() => el.classList.add("on"));
   setTimeout(close, ms);
 }
+// GET answers are remembered with the server's ETag: when nothing changed the server sends an empty 304 and the last
+// copy is reused — on a slow link the polls then cost almost nothing.
+const apiCache = new Map(); // path → { etag, data }
 async function api(path, body) {
-  const r = await fetch(path, body ? { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) } : {});
+  const hit = body ? null : apiCache.get(path);
+  const r = await fetch(path, body ? { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) } : hit ? { headers: { "if-none-match": hit.etag } } : {});
+  if (r.status === 304 && hit) return hit.data;
   const d = await r.json().catch(() => ({}));
   if (!r.ok) throw new Error(d.error || d.out || r.statusText);
+  const etag = body ? null : r.headers.get("etag");
+  if (etag) { if (apiCache.size > 60) apiCache.clear(); apiCache.set(path, { etag, data: d }); }
   return d;
 }
 const short = (p) => (p || "").replace(/^\/(?:Users|home)\/[^/]+/, "~");
@@ -98,13 +112,18 @@ const isDashView = (v) => v === "list" || !!plug.pages[v];
 const refreshPlugins = () => Promise.all(plug.refresh.map((f) => Promise.resolve().then(f).catch((e) => console.warn(e))));
 // Language: this device's own choice (the switch at the bottom of the dashboard), else the server's "lang" setting.
 const LANGS = [["en", "English"], ["zh", "中文"]];
+// Both start from what this device saw last time (no waiting on the network) and are refreshed in the background;
+// a changed server setting applies on the next open.
 async function initLang() {
-  let l = store.get("lang");
-  if (!l) try { l = (await api("/api/ui")).lang; } catch {}
+  let l = store.get("lang") || store.get("srvLang");
+  const fresh = api("/api/ui").then((u) => { store.set("srvLang", u.lang || "en"); return u.lang; }).catch(() => null);
+  if (!l) l = await fresh;
   setLang(l || "en"); translateStatic();
 }
 async function loadPluginUi() {
-  let list = []; try { list = await api("/api/plugins"); } catch { return; }
+  let list = null; try { list = JSON.parse(store.get("plugins") || "null"); } catch {}
+  const fresh = api("/api/plugins").then((x) => { store.set("plugins", JSON.stringify(x)); return x; }).catch(() => null);
+  if (!list) list = (await fresh) || [];
   for (const p of list) {
     if (p.css) { const l = document.createElement("link"); l.rel = "stylesheet"; l.href = p.css; document.head.append(l); }
     if (p.ui) try { await import(p.ui); } catch (e) { console.warn(`plug-in ${p.name}:`, e); }
@@ -137,14 +156,25 @@ function mergeFleet(loc, fl) {
 }
 let prevJobState = null;
 const showAll = { done: false, tr: false };
+// The last listing is kept on this device, so opening the page shows it at once (marked "updating…") while the
+// fresh one is on its way. Only the lists are kept — never terminal or chat content.
+function saveSnapshot(loc, fl) { try { localStorage.setItem("snap", JSON.stringify({ at: Date.now(), loc, fl })); } catch {} }
+function loadSnapshot() {
+  try {
+    const s = JSON.parse(store.get("snap") || "null"); if (!s?.loc || Date.now() - s.at > 7 * 86400_000) return false;
+    data = mergeFleet(s.loc, s.fl); document.body.classList.add("stale"); $("#home").title = t("updating…"); return true;
+  } catch { return false; }
+}
 
 async function poll() {
   try {
     const [loc, fl] = await Promise.all([api("/api/sessions"), api("/api/fleet").catch(() => null)]);
     data = mergeFleet(loc, fl);
+    saveSnapshot(loc, fl); document.body.classList.remove("stale");
     notifyTransitions();
     const v = route().view;
-    if (v === "list") { await refreshPlugins(); await loadStats(); renderDash(); } else if (plug.pages[v]) { await refreshPlugins(); renderPage(v); } else refreshMeta();
+    if (v === "list") { renderDash(); Promise.all([refreshPlugins(), loadStats()]).then(() => route().view === "list" && renderDash()); }
+    else if (plug.pages[v]) { await refreshPlugins(); renderPage(v); } else refreshMeta();
     renderSide();
     const blocked = data.jobs.filter(isBlocked).length;
     document.title = blocked ? `(${blocked}) Quarterdeck` : "Quarterdeck";
@@ -1009,8 +1039,8 @@ addEventListener("keydown", (e) => {
 
 if ("serviceWorker" in navigator && window.isSecureContext) navigator.serviceWorker.register("/sw.js").then(refreshBell).catch(() => {});
 else refreshBell();
-await initLang();
-await loadPluginUi(); // before the first route, so a plug-in page like #/cleanse is known
-await poll();
-go();
+await Promise.all([initLang(), loadPluginUi()]); // plug-ins before the first route, so a page like #/cleanse is known
+if (loadSnapshot()) { go(); await poll(); } // last known lists first, fresh ones as soon as they arrive
+else { await poll(); go(); }
+
 setInterval(poll, 4000);
