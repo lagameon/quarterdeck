@@ -612,8 +612,8 @@ function openChat(opt = {}) {
     else if (d.evs.length) $("#jump").hidden = false;
     if (!d.initial && d.evs.some((e) => e.k === "tool" && /Edit|Write/.test(e.name)) && cur.tab === "changes") loadChanges();
   };
-  ws.onopen = () => renderActivity();
-  ws.onclose = () => { if (ctx === cur && !ctx.closing) { ctx.tailWs = null; renderActivity(); setTimeout(() => ctx === cur && !ctx.tailWs && openChat(), 2000); } };
+  ws.onopen = () => { ws._opened = true; ctx.tailFails = 0; renderActivity(); };
+  ws.onclose = () => { if (ctx === cur && !ctx.closing) { if (!ws._opened) ctx.tailFails = (ctx.tailFails || 0) + 1; ctx.tailWs = null; renderActivity(); setTimeout(() => ctx === cur && !ctx.tailWs && openChat(), 2000); } };
 }
 function loadEarlier() {
   if (!cur?.tailWs) return;
@@ -653,7 +653,7 @@ function renderActivity() {
   const pending = [...ev.querySelectorAll(".ev.user.pending")];
   for (const p of pending) if (Date.now() - Number(p.dataset.at) > 30_000) p.querySelector(".pstate").textContent = t("not confirmed yet");
   let text = "", cls = "";
-  if (cur.tailWs?.readyState !== 1) { text = t("live connection lost — reconnecting…"); cls = "warn"; }
+  if (cur.tailWs?.readyState !== 1) { text = t((cur.tailFails || 0) >= 3 ? "can't open this session's transcript (not found on that machine) — still trying; the Terminal view works" : "live connection lost — reconnecting…"); cls = "warn"; }
   else if (working) {
     if (!cur.workSince) cur.workSince = Date.now();
     text = `${t("Claude is working")}${j.detail && detailFresh ? " · " + j.detail : ""} · ${fmtSecs(Math.round((Date.now() - cur.workSince) / 1000))}`;

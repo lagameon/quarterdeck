@@ -295,6 +295,16 @@ function listJobs(): Job[] {
   jobsSnap = { at: Date.now(), jobs: scanJobs() };
   return jobsSnap.jobs;
 }
+// A job's state.json can carry two ids: sessionId and resumeSessionId. A session that was resumed/recovered keeps
+// writing to the transcript of the id it resumed, and no file exists under its own sessionId — so use whichever id
+// has a transcript (the more recently written one if both do). Seen: Chat reconnecting forever, Terminal fine.
+function jobSessionId(s: any): string {
+  const ids: string[] = [...new Set([s.sessionId, s.resumeSessionId].filter((x: unknown) => typeof x === "string" && x))] as string[];
+  if (ids.length < 2) return ids[0] || "";
+  let best = ids[0], bestM = -1;
+  for (const id of ids) { const f = findSessionFile(id); if (!f) continue; let m = 0; try { m = statSync(f).mtimeMs; } catch {} if (m > bestM) { best = id; bestM = m; } }
+  return best;
+}
 function scanJobs(): Job[] {
   agentsCache.get(); const agents = agentsCache.peek();
   const out: Job[] = [];
@@ -304,7 +314,7 @@ function scanJobs(): Job[] {
     const s = readJson(join(jobsDir, id, "state.json"));
     if (!s) continue;
     out.push({
-      kind: "job", id, sessionId: s.sessionId || s.resumeSessionId || "", name: s.name || s.intent?.slice(0, 60) || id,
+      kind: "job", id, sessionId: jobSessionId(s), name: s.name || s.intent?.slice(0, 60) || id,
       state: s.state || "?", tempo: s.tempo || "", detail: s.detail || "", needs: s.needs ?? null, output: s.output ?? null,
       intent: s.intent || "", cwd: s.cwd || s.originCwd || HOME, createdAt: s.createdAt || "", updatedAt: s.updatedAt || "",
       pid: agents.get(id)?.pid, profile: prof.id,
