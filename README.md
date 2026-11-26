@@ -19,8 +19,12 @@ It is built directly on Claude Code's own background sessions (`claude --bg`, `c
 - **Push notifications** — Web Push (iOS/iPadOS Home Screen app, desktop browsers) and optionally a Telegram bot, sent by the server when a session becomes *blocked* or *done*. Tapping opens that session.
 - **Overview** — today's tiles (running / waiting / done, active sessions, your messages, Claude turns and tool calls, output and input tokens by model) and 14-day charts, built incrementally from your local transcripts. Optional subscription-quota tiles from a [quotad](#optional-quota-tiles)-compatible endpoint.
 - **Several accounts** — keep more than one Claude account signed in side by side and pick the account when you start or resume a session; every session shows which account it runs on. See [Several accounts](#several-accounts).
-- **Several machines** — one page for the Claude Code sessions on all your machines (e.g. a desktop, a laptop and a Linux workstation): every session shows its machine, and Start / Chat / Terminal / menus / Stop act on the machine it lives on. See [Several machines](#several-machines).
+- **Several machines** — one page for the Claude Code sessions on all your machines (e.g. a desktop, a laptop and a Linux workstation): every session shows its machine, and Start / Chat / Terminal / menus / Stop act on the machine it lives on. The dashboard has one line per machine (free disk, load, memory, GPU, Claude Code version, login expiry) and warns about low disk, an expiring login or a machine on an older Quarterdeck. See [Several machines](#several-machines).
 - **Project picker** — *New session* lists the chosen machine's projects (folders under `projectRoots`, default `~/Projects`, that contain a `CLAUDE.md`, `.git` or a build file; plus trusted and recently used folders) and shows the memory the session will load: the global `CLAUDE.md`, every `CLAUDE.md` / `CLAUDE.local.md` / `.claude/rules` from the top down to that folder, and the folder's auto-memory index, with sizes. A folder Claude Code does not trust yet gets an *Open Claude here* button (an interactive Claude in the Terminal view, to answer the trust question from a phone). On macOS, privacy-protected folders (Documents, Desktop, Downloads, …) are never opened: touching them from a login service would block on a permission dialog.
+- **Slow connections** — responses are compressed, an unchanged listing is answered with an empty reply, the page's own files are kept on the device, and the last known session lists appear at once while fresh ones load. Measured at 250 ms / 750 kbps: reopening the page shows content in about 0.1 s instead of 5 s, and an idle dashboard uses about 0.1 MB a minute instead of 1.4 MB.
+- **Languages** — English and Chinese (`lang` in the config; each device can switch for itself). Translations are one file, `public/i18n.js`.
+- **Plug-ins** — private features (your own routes, a dashboard block, pages, session buttons) live outside the repo and load from the config, so you never need a fork. See [Plug-ins](#plug-ins).
+- **Stays up** — every `claude` / `git` / `tailscale` call runs without blocking and with a timeout; if the server's main thread is ever stuck for 45 s it exits and the service manager starts a fresh one.
 - **Keyboard** — ⌘K session switcher, Alt+1–4 Chat / Terminal / Split / Changes, Alt+N new session, `/` focus the composer.
 
 ## Requirements
@@ -144,6 +148,8 @@ Features you want only for yourself (say, a private Q&A over your own notes) can
 
 **Notifications.** `hideBody: true` hides both the session name and its text in notifications. Push subscriptions are independent of Tailscale: removing a device from your tailnet does **not** stop notifications to it — remove its entry from `~/.config/quarterdeck/subscriptions.json` (or unsubscribe in that browser) as well.
 
+**On your devices.** The browser keeps a copy of the page's own files (service worker) and, in local storage, the last session lists (names, state lines, folders) so the page opens at once; never chat or terminal content. Clear the site's data in the browser to remove them.
+
 Please report security issues privately via GitHub's *Report a vulnerability* rather than a public issue.
 
 ## Optional: quota tiles
@@ -163,7 +169,8 @@ If you run a collector that exposes JSON like below, set `quotaUrl` and the over
 - Menus are recognised by parsing the terminal screen (`menu.ts`); unusual menus may not be detected — the Terminal view always works.
 - Single user by design (one `owner`).
 - Several machines: the hub forwards to nodes over plain HTTP inside the tailnet (WireGuard-encrypted); don't point `nodes` at addresses outside your tailnet.
-- Starting a session in a directory Claude Code has never trusted fails; the CLI's message is shown as-is.
+- Background sessions need the folder itself to be trusted by Claude Code (a trusted parent folder is not enough). Quarterdeck refuses early and says so; *Open Claude here* in the New-session dialog lets you answer the trust question from a phone.
+- After an update, a device shows the previous version of the page once and then offers "A new version is ready — tap to reload" (the page's files are kept on the device for fast opening).
 
 ## Development
 
