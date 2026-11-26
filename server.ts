@@ -687,9 +687,23 @@ async function actSend(body: any) {
   if (body.enter !== false) { await Bun.sleep(text ? 200 : 0); p.write("\r"); }
   return json({ ok: true });
 }
+// In a Claude session's main view with an empty input box, Left opens Claude Code's own "all sessions" overview
+// (hint "← N agents" in the footer). Quarterdeck's dashboard is that overview, and leaving it with Esc closes the
+// attach client — so that one key press is dropped. Everywhere else (editing text, menus, settings, shells) Left works.
+const LEFT_KEYS = new Set(["\x1b[D", "\x1bOD"]);
+function opensOverview(key: string, p: Pty, data: string): boolean {
+  if (!key.startsWith("job:") || !LEFT_KEYS.has(data)) return false;
+  const lines = p.lines().map((l) => l.trimEnd()).filter(Boolean).slice(-8);
+  if (!lines.some((l) => /←\s*\d+\s+agents?\b/.test(l))) return false;       // the hint is only shown in the main view
+  const prompt = [...lines].reverse().find((l) => /^\s*[❯>]/.test(l));           // the input line: "❯" + what was typed
+  return !!prompt && /^\s*[❯>]\s*$/.test(prompt);                               // empty → Left would open the overview
+}
 function actKeys(body: any) {
-  const p = getPty(String(body.target || "")); if (!p) return json({ error: "bad target" }, 400);
-  p.write(String(body.data || "")); return json({ ok: true });
+  const key = normKey(String(body.target || ""));
+  const p = getPty(key); if (!p) return json({ error: "bad target" }, 400);
+  const data = String(body.data || "");
+  if (opensOverview(key, p, data)) return json({ ok: true, blocked: "overview" });
+  p.write(data); return json({ ok: true });
 }
 async function actRm(body: any) {
   // "×" in the UI: remove a background session from the list. `claude rm` keeps the transcript, so the
@@ -1200,7 +1214,7 @@ const websocket = {
     const p = ptys.get(d.key); if (!p) return;
     let m: any; try { m = JSON.parse(String(msg)); } catch { return; }
     p.lastClientAt = Date.now();
-    if (m.t === "in" && typeof m.d === "string") p.write(m.d);
+    if (m.t === "in" && typeof m.d === "string") { if (opensOverview(d.key, p, m.d)) { try { ws.send(JSON.stringify({ t: "blocked", why: "overview" })); } catch {} } else p.write(m.d); }
     else if (m.t === "resize") p.resize(m.cols, m.rows);
     else if (m.t === "redraw") p.nudge();
   },

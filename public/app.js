@@ -824,7 +824,7 @@ function connectPty(ctx) {
   ws.onopen = () => { ctx.retry = 0; ctx.term.reset(); fitTerm(true); };
   ws.onmessage = (m) => {
     if (ctx.closing || ctx !== cur) return; // late bytes after a view switch: the terminal is already disposed
-    if (typeof m.data === "string") { const d = JSON.parse(m.data); if (d.t === "exit") { ctx.term.write(`\r\n\x1b[33m${t("[process exited — reopen the session to restart it]")}\x1b[0m\r\n`); ctx.exited = true; } return; }
+    if (typeof m.data === "string") { const d = JSON.parse(m.data); if (d.t === "blocked") { if (Date.now() - (ctx.blockedAt || 0) > 6000) { ctx.blockedAt = Date.now(); toast(t("← does nothing here: Claude's session overview is the Quarterdeck home page"), 3500); } return; } if (d.t === "exit") { ctx.term.write(`\r\n\x1b[33m${t("[process exited — reopen the session to restart it]")}\x1b[0m\r\n`); ctx.exited = true; } return; }
     ctx.term.write(new Uint8Array(m.data));
   };
   ws.onclose = () => {

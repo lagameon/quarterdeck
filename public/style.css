@@ -397,3 +397,7 @@ dialog label > span[data-i18n] { margin: 0; color: inherit; }
 /* showing the last known lists while the fresh ones load */
 body.stale .brand::after { content: " ⟳"; color: var(--dim); font-weight: 400; animation: qd-spin 1.2s linear infinite; display: inline-block; margin-left: 4px; }
 @keyframes qd-spin { to { transform: rotate(360deg); } }
+/* Terminal: browsers trim full-width punctuation (；，、（) to half width at the start of a line. xterm measures each
+   character alone (= at a line start) and then pads it to two cells, so every such mark came out too wide and long
+   CJK lines ran past the right edge. Measure and draw them untrimmed. */
+.xterm, .xterm * { text-spacing-trim: space-all; }
