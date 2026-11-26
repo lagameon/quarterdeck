@@ -100,7 +100,8 @@ const zh = {
   "⚠ Not trusted yet: a background session can't start here until Claude Code trusts this folder itself": "⚠ 尚未信任：Claude Code 信任这个文件夹本身之前，后台会话不能在这里启动",
   " (a folder above it is trusted, but that doesn't count for background sessions)": "（上级文件夹被信任，但对后台会话不算数）",
   "Open Claude here to trust it": "在这里打开 Claude 来信任它", "no match": "没有匹配",
-  "← does nothing here: Claude's session overview is the Quarterdeck home page": "这里按 ← 不起作用：会话总览就是 Quarterdeck 首页", "updating…": "更新中…", "A new version is ready — tap to reload": "有新版本——点这里刷新",
+  "← does nothing here: Claude's session overview is the Quarterdeck home page": "这里按 ← 不起作用：会话总览就是 Quarterdeck 首页", "Notifications reach no device since {d} ({n} not delivered): the phone's subscription ended. Open Quarterdeck on the phone and tap 🔔.": "从 {d} 起通知发不到任何设备（已有 {n} 条没送达）：手机上的订阅失效了。在手机上打开 Quarterdeck，点一下 🔔。",
+  "updating…": "更新中…", "A new version is ready — tap to reload": "有新版本——点这里刷新",
   "global": "全局", "global rules": "全局规则", "parent": "上级", "parent rules": "上级规则", "this folder": "本文件夹", "this folder rules": "本文件夹规则", "auto-memory": "自动记忆",
 };
 const DICT = { en: {}, zh };

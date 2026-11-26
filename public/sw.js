@@ -36,6 +36,16 @@ self.addEventListener("push", (e) => {
     body: d.body || "", tag: d.tag, renotify: true, data: { url: d.url || "/" }, icon: "/icon-192.png", badge: "/icon-192.png",
   }));
 });
+// The browser replaced or dropped this device's subscription: subscribe again and tell the server (best effort —
+// the page does the same on its next open).
+self.addEventListener("pushsubscriptionchange", (e) => e.waitUntil((async () => {
+  try {
+    const key = (await (await fetch("/api/push/key")).json()).publicKey;
+    const raw = atob((key + "=".repeat((4 - (key.length % 4)) % 4)).replace(/-/g, "+").replace(/_/g, "/"));
+    const sub = await self.registration.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: Uint8Array.from(raw, (c) => c.charCodeAt(0)) });
+    await fetch("/api/push/subscribe", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ subscription: sub.toJSON(), label: "renewed by the browser" }) });
+  } catch {}
+})()));
 self.addEventListener("notificationclick", (e) => {
   e.notification.close();
   const url = new URL((e.notification.data && e.notification.data.url) || "/", self.location.origin).href;

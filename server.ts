@@ -16,6 +16,11 @@ if (process.argv.includes("--build-id")) { console.log(BUILD); process.exit(0); 
 const STARTED_AT = Date.now();
 const APP_VERSION: string = (() => { try { return JSON.parse(readFileSync(join(import.meta.dir, "package.json"), "utf8")).version || "?"; } catch { return "?"; } })();
 
+// Every log line starts with the local date and time (launchd / systemd files have none of their own).
+for (const k of ["log", "warn", "error"] as const) {
+  const orig = console[k].bind(console);
+  console[k] = (...a: unknown[]) => orig(new Date().toLocaleString("sv").slice(5), ...a); // "11-26 23:07:02"
+}
 const HOME = homedir();
 const CLAUDE_DIR = join(HOME, ".claude");
 const JOBS_DIR = join(CLAUDE_DIR, "jobs");
@@ -482,8 +487,10 @@ class Tail {
 // One PTY per target, shared by all viewers (tmux-like). Output kept in a ring buffer
 // so a reconnecting / second device gets the screen back (mosh-like).
 type WsAuth = { who: string; peer?: string }; // peer = tailnet address to re-check (absent for plain local)
-type WsData = ({ kind: "pty"; key: string } | { kind: "tail"; tail: Tail; limit: number; timer?: Timer }
-  | { kind: "proxy"; target: string; queue: (string | Buffer)[]; up?: WebSocket }) & WsAuth;
+// A chat stream ("tail") also carries the menu of its session (target) and knows whether its page is in front
+// (visible) — so a finished turn isn't pushed to a phone while its owner is reading that very session.
+type WsData = ({ kind: "pty"; key: string } | { kind: "tail"; tail: Tail; limit: number; timer?: Timer; target?: string; menuSig?: string; visible?: boolean }
+  | { kind: "proxy"; target: string; queue: (string | Buffer)[]; up?: WebSocket; visible?: boolean }) & WsAuth;
 const openSockets = new Set<ServerWebSocket<WsData>>();
 const RING = 400_000;
 class Pty {
@@ -830,6 +837,8 @@ let subs: Sub[] = confRead("subscriptions.json", []);
 const notifyConf = () => confRead("config.json", {}) as { baseUrl?: string; telegram?: { token: string; chatId: string }; notifyDone?: boolean };
 
 type Note = { title: string; body: string; url: string; tag: string };
+let pushLost: { at: string; missed: number } | null = confRead("push_state.json", null);
+if (pushLost && subs.length) pushLost = null;
 async function sendAll(n: Note): Promise<{ push: number; pushFailed: number; telegram: boolean | null }> {
   let push = 0, pushFailed = 0;
   const dead = new Set<string>();
@@ -837,7 +846,13 @@ async function sendAll(n: Note): Promise<{ push: number; pushFailed: number; tel
     try { await webpush.sendNotification(s.subscription, JSON.stringify(n), { TTL: 6 * 3600, urgency: "high", timeout: 20000 }); push++; }
     catch (e: any) { pushFailed++; if (e?.statusCode === 404 || e?.statusCode === 410) dead.add(s.subscription.endpoint); console.warn(`[push] ${s.label}: ${e?.statusCode || e?.message}`); }
   }));
-  if (dead.size) { subs = subs.filter((s) => !dead.has(s.subscription.endpoint)); confWrite("subscriptions.json", subs); }
+  if (dead.size) {
+    subs = subs.filter((s) => !dead.has(s.subscription.endpoint)); confWrite("subscriptions.json", subs);
+    // The push service says this device's subscription is gone (expired, app removed, new phone). If it was the last
+    // one, nothing reaches the owner any more — remember since when, the dashboard warns until a device subscribes again.
+    if (!subs.length) { pushLost = { at: new Date().toISOString(), missed: 0 }; confWrite("push_state.json", pushLost); console.warn("[push] no device is subscribed any more — notifications reach nobody until one subscribes again"); }
+  }
+  if (!subs.length && pushLost) { pushLost.missed++; if (pushLost.missed % 10 === 1) confWrite("push_state.json", pushLost); }
   let telegram: boolean | null = null;
   const c = notifyConf();
   if (c.telegram?.token && c.telegram?.chatId) {
@@ -943,6 +958,14 @@ function healthAlerts() {
 }
 setInterval(healthAlerts, 5 * 60_000); setTimeout(healthAlerts, 60_000); // after the first node polls and health samples
 
+function beingWatched(j: Job, node: NodeConf | null): boolean {
+  for (const ws of openSockets) {
+    const d = ws.data; if (d.kind === "pty" || !d.visible) continue;
+    if (!node && d.kind === "tail" && j.sessionId && basename(d.tail.path, ".jsonl") === j.sessionId) return true;
+    if (node && d.kind === "proxy" && j.sessionId && d.target.startsWith(node.url.replace(/^http/, "ws") + "/ws/tail") && d.target.includes(`session=${j.sessionId}`)) return true;
+  }
+  return false;
+}
 let lastStates: Map<string, string> | null = null;
 const seenNodes = new Set<string>(); // a node's first answer is a baseline, not a burst of notifications
 function watchJobs() {
@@ -962,7 +985,9 @@ function watchJobs() {
     if (!node && plugins.some((pl) => { try { return pl.onSessionChange?.(j, st, prev, { url, key }) === true; } catch (e: any) { console.warn(`[plugin] ${pl.name}: ${e?.message || e}`); return false; } })) continue;
     const hide = !!notifyConf().hideBody; // optional lock-screen privacy for all sessions
     if (st === "blocked") sendAll({ title: hide ? tr("⚑ A session needs you") : `⚑ ${at}${j.name}`, body: hide ? tr("needs your reply") : (textOf(j.needs) || j.detail || tr("needs your input")).slice(0, 300), url, tag: key });
-    else if (st === "done" && prev !== undefined && notifyConf().notifyDone !== false) sendAll({ title: hide ? tr("✓ A session finished") : `✓ ${at}${j.name}`, body: hide ? tr("finished") : (textOf(j.output) || j.detail || tr("finished")).slice(0, 300), url, tag: key });
+    // "prev === undefined" normally means "was already there when this server started": no announcement. But a session
+    // created after the start whose first turn ended between two checks is first seen as done — that one is news.
+    else if (st === "done" && (prev !== undefined || Date.parse(j.createdAt) > STARTED_AT) && notifyConf().notifyDone !== false && !beingWatched(j, node)) sendAll({ title: hide ? tr("✓ A session finished") : `✓ ${at}${j.name}`, body: hide ? tr("finished") : (textOf(j.output) || j.detail || tr("finished")).slice(0, 300), url, tag: key });
   }
   lastStates = now;
   for (const n of FLEET.nodes) if (nodeState.get(n.id)?.online) seenNodes.add(n.id);
@@ -1051,8 +1076,9 @@ async function handle(req: Request, server: any): Promise<Response | undefined> 
       if (!file) return new Response("no session", { status: 404 });
       // "Load earlier" re-opens the tail with a larger event limit and byte window (both capped).
       const num = (k: string, def: number, lo: number, hi: number) => { const v = Number(url.searchParams.get(k)); return Number.isFinite(v) && v > 0 ? Math.max(lo, Math.min(hi, Math.floor(v))) : def; };
-      const limit = num("limit", 600, 100, 6000), bytes = num("bytes", 4_000_000, 1_000_000, 40_000_000);
-      if (server.upgrade(req, { data: { kind: "tail", tail: new Tail(file, bytes), limit, who: auth.who, peer: authPeer(req, ip) } })) return;
+      const limit = num("limit", 150, 50, 6000), bytes = num("bytes", 3_000_000, 1_000_000, 40_000_000);
+      const tkey = normKey(url.searchParams.get("target") || ""); const target = tkey && targetCommand(tkey) ? tkey : undefined;
+      if (server.upgrade(req, { data: { kind: "tail", tail: new Tail(file, bytes), limit, target, who: auth.who, peer: authPeer(req, ip) } })) return;
     }
     return new Response("upgrade failed", { status: 400 });
   }
@@ -1080,7 +1106,7 @@ async function handle(req: Request, server: any): Promise<Response | undefined> 
       const transcripts = listTranscripts(Number(url.searchParams.get("limit") || 40), jobSids);
       const tmux = await listTmux();
       const cwds = [...new Set([...jobs.map((j) => j.cwd), ...transcripts.map((t) => t.cwd)].filter(Boolean))].slice(0, 25);
-      return json({ jobs, transcripts, tmux, cwds, ptys: [...ptys.keys()], accounts: await accountsStatus(), machine: machineInfo(), who: auth.who, now: Date.now() });
+      return json({ jobs, transcripts, tmux, cwds, ptys: [...ptys.keys()], accounts: await accountsStatus(), machine: machineInfo(), push: { devices: subs.length, lost: pushLost }, who: auth.who, now: Date.now() });
     }
     if (path === "/api/job") {
       const id = url.searchParams.get("id") || "";
@@ -1127,13 +1153,15 @@ async function handle(req: Request, server: any): Promise<Response | undefined> 
     if (req.method === "POST") {
       body = await req.json().catch(() => ({}));
       const ref = [body.id, body.target, body.sessionId].filter((x) => typeof x === "string" && /^[\w:.\-]{1,80}$/.test(x)).join(" ");
-      console.log(`[act] ${auth.who} ${path}${ref ? " " + ref : ""}`);
+      if (path !== "/api/prompt") console.log(`[act] ${auth.who} ${path}${ref ? " " + ref : ""}`); // the menu check is a poll, not an action
       if (path === "/api/push/subscribe") {
         const sub = body.subscription;
         if (!sub?.endpoint || !/^https:\/\//.test(String(sub.endpoint)) || !sub.keys?.p256dh || !sub.keys?.auth) return json({ error: "invalid subscription" }, 400);
         subs = subs.filter((x) => x.subscription.endpoint !== sub.endpoint);
         subs.push({ subscription: sub, label: String(body.label || auth.who).slice(0, 80), at: new Date().toISOString() });
-        confWrite("subscriptions.json", subs); return json({ ok: true, devices: subs.length });
+        confWrite("subscriptions.json", subs);
+        if (pushLost) { pushLost = null; confWrite("push_state.json", null); }
+        return json({ ok: true, devices: subs.length });
       }
       if (path === "/api/push/unsubscribe") { subs = subs.filter((x) => x.subscription.endpoint !== body.endpoint); confWrite("subscriptions.json", subs); return json({ ok: true }); }
       if (path === "/api/push/test") return json(await sendAll({ title: "🔔 Quarterdeck test", body: `Notifications work on this channel (${new Date().toLocaleTimeString()}).`, url: "/", tag: "quarterdeck-test" }));
@@ -1202,13 +1230,23 @@ const websocket = {
     } else {
       const evs = d.tail.readNew();
       ws.send(JSON.stringify({ t: "events", evs: evs.slice(-d.limit), truncated: evs.length > d.limit || d.tail.startedMidFile, initial: true }));
+      const sendMenu = () => {
+        if (!d.target) return;
+        const p = getPty(d.target); if (!p) return;        // keeps an attach client alive, so the screen mirror is current
+        p.lastClientAt = Date.now();
+        const menu = parseMenu(p.lines()); const sig = menu ? JSON.stringify(menu) : "";
+        if (sig !== d.menuSig) { d.menuSig = sig; ws.send(JSON.stringify({ t: "menu", menu })); }
+      };
       d.timer = setInterval(() => {
-        const n = d.tail.readNew(); if (n.length) ws.send(JSON.stringify({ t: "events", evs: n }));
+        try { const n = d.tail.readNew(); if (n.length) ws.send(JSON.stringify({ t: "events", evs: n })); sendMenu(); } catch {}
       }, 700);
     }
   },
   message(ws: ServerWebSocket<WsData>, msg: string | Buffer) {
     const d = ws.data;
+    if (d.kind === "proxy" || d.kind === "tail") { // page in front / in the background (the hub notes it for relayed streams too)
+      if (typeof msg === "string" && msg.length < 40 && msg.startsWith('{"t":"vis"')) { try { d.visible = !!JSON.parse(msg).v; } catch {} }
+    }
     if (d.kind === "proxy") { if (d.up?.readyState === 1) d.up.send(msg); else if (d.queue.length < 200) d.queue.push(msg); return; }
     if (d.kind !== "pty") return;
     const p = ptys.get(d.key); if (!p) return;

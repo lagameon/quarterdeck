@@ -205,6 +205,20 @@ async function pushState() {
   return sub ? "on" : "off";
 }
 async function refreshBell() { const st = await pushState().catch(() => "off"); $("#notif").textContent = st === "on" ? "🔔" : "🔕"; $("#notif").title = st === "on" ? t("Push on for this device — click to send a test") : t("Enable push notifications on this device"); }
+const pushLabel = () => `${/iPhone/.test(navigator.userAgent) ? "iPhone" : /iPad/.test(navigator.userAgent) ? "iPad" : /Mac/.test(navigator.userAgent) ? "Mac" : "device"} · ${navigator.userAgent.match(/(Chrome|Safari|Firefox|Edg)\/[\d.]+/)?.[0] || ""}`;
+// A device that had push switched on keeps it: the subscription is re-created if the browser dropped it (expired,
+// app re-installed) and re-announced to the server on every open (the server may have forgotten it).
+async function ensurePush() {
+  try {
+    if (!window.isSecureContext || !("PushManager" in window) || Notification.permission !== "granted") return;
+    const reg = await navigator.serviceWorker.ready; let sub = await reg.pushManager.getSubscription();
+    if (!sub && store.get("pushOn") !== "1") return;           // never switched on here
+    if (!sub) { const { publicKey } = await api("/api/push/key"); sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: b64ToU8(publicKey) }); }
+    store.set("pushOn", "1");
+    await api("/api/push/subscribe", { subscription: sub.toJSON(), label: pushLabel() });
+    refreshBell();
+  } catch (e) { console.warn("push:", e); }
+}
 $("#notif").onclick = async () => {
   try {
     if (!window.isSecureContext) {
@@ -218,9 +232,9 @@ $("#notif").onclick = async () => {
       if ((await Notification.requestPermission()) !== "granted") return toast(t("Notifications were not allowed"));
       const { publicKey } = await api("/api/push/key");
       sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: b64ToU8(publicKey) });
-      const label = `${/iPhone/.test(navigator.userAgent) ? "iPhone" : /iPad/.test(navigator.userAgent) ? "iPad" : /Mac/.test(navigator.userAgent) ? "Mac" : "device"} · ${navigator.userAgent.match(/(Chrome|Safari|Firefox|Edg)\/[\d.]+/)?.[0] || ""}`;
-      await api("/api/push/subscribe", { subscription: sub.toJSON(), label });
+      await api("/api/push/subscribe", { subscription: sub.toJSON(), label: pushLabel() });
     }
+    store.set("pushOn", "1");
     const r = await api("/api/push/test", {});
     toast(`${t("Test sent to {n} device(s)", { n: r.push })}${r.telegram === null ? "" : `, Telegram ${r.telegram ? "ok" : "failed"}`}`, 4000);
   } catch (e) { toast(t("Push setup failed: {e}", { e: e.message }), 6000); }
@@ -418,6 +432,7 @@ function machinesBlock() {
   const ms = [{ id: "", label: hostLabel(""), m: data.machine, accounts: data.accounts || [], online: true },
     ...(fleet.nodes || []).map((n) => ({ id: n.id, label: n.label, m: n.data?.machine, accounts: n.data?.accounts || [], online: n.online }))];
   const warns = [], rows = [];
+  if (data.push?.lost) warns.push(t("Notifications reach no device since {d} ({n} not delivered): the phone's subscription ended. Open Quarterdeck on the phone and tap 🔔.", { d: esc(new Date(data.push.lost.at).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })), n: data.push.lost.missed }));
   for (const x of ms) {
     if (!x.online) continue; // the offline banner covers it
     const h = x.m?.health, qd = x.m?.quarterdeck, bad = [];
@@ -575,8 +590,9 @@ function setTab(tab, byUser) {
   $("#keys").hidden = !cur.target || tab === "changes" || tab === "chat";
   $("#composer").hidden = tab === "changes";
   if (showChat && !cur.tailWs) openChat();
-  if (showChat && cur.target && !cur.promptTimer) { pollPrompt(); cur.promptTimer = setInterval(pollPrompt, 1500); }
-  if (!showChat && cur.promptTimer) { clearInterval(cur.promptTimer); cur.promptTimer = null; $("#promptCard").hidden = true; }
+  if (showChat && cur.target) pollPrompt();                 // once, now; changes then arrive over the chat stream
+  if (!showChat) $("#promptCard").hidden = true;
+  sendVisible();
   if (showTerm) { if (!cur.term) openTerm(); else setTimeout(() => fitTerm(true), 30); }
   if (tab === "changes") loadChanges();
 }
@@ -585,14 +601,16 @@ function setTab(tab, byUser) {
 function openChat(opt = {}) {
   const ev = $("#events"); if (!opt.keep) ev.innerHTML = `<div class="empty">${t("loading…")}</div>`;
   cur.toolEls = new Map(); cur.lastTs = 0; cur.subs = new Map(); cur.bgs = new Map(); cur.agentIds = new Map();
-  cur.tailLimit = cur.tailLimit || 600; cur.newDiv = null;
+  cur.tailLimit = cur.tailLimit || 150; cur.newDiv = null;
   // What arrived since you last read this session (on this device) gets a "new since" divider.
   if (cur.seenAt === undefined) cur.seenAt = Number(store.get(`seen:${cur.sessionId}`)) || 0;
-  const q = `session=${encodeURIComponent(cur.sessionId)}&limit=${cur.tailLimit}&bytes=${Math.min(40_000_000, cur.tailLimit * 20_000)}`;
+  const q = `session=${encodeURIComponent(cur.sessionId)}&limit=${cur.tailLimit}&bytes=${Math.min(40_000_000, cur.tailLimit * 20_000)}${cur.target ? "&target=" + encodeURIComponent(cur.target) : ""}`;
   const ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}${nb(cur.node)}/ws/tail?${q}`);
   cur.tailWs = ws; const ctx = cur;
   ws.onmessage = (m) => {
-    const d = JSON.parse(m.data); if (d.t !== "events" || ctx !== cur) return;
+    const d = JSON.parse(m.data); if (ctx !== cur) return;
+    if (d.t === "menu") { ctx.menuPushed = true; if (!$("#chat").hidden) renderPrompt(d.menu); return; } // menus come with the stream — no polling
+    if (d.t !== "events") return;
     const chat = $("#chat"); const stick = !d.initial && chat.scrollHeight - chat.scrollTop - chat.clientHeight < 120;
     if (d.initial) {
       ev.innerHTML = !d.truncated ? "" : ctx.tailLimit >= 6000 ? `<div class="empty">${t("(older messages omitted)")}</div>` : `<div class="earlier"><button id="earlierBtn">${t("Load earlier messages")}</button></div>`;
@@ -612,9 +630,11 @@ function openChat(opt = {}) {
     else if (d.evs.length) $("#jump").hidden = false;
     if (!d.initial && d.evs.some((e) => e.k === "tool" && /Edit|Write/.test(e.name)) && cur.tab === "changes") loadChanges();
   };
-  ws.onopen = () => { ws._opened = true; ctx.tailFails = 0; renderActivity(); };
+  ws.onopen = () => { ws._opened = true; ctx.tailFails = 0; sendVisible(); renderActivity(); };
   ws.onclose = () => { if (ctx === cur && !ctx.closing) { if (!ws._opened) ctx.tailFails = (ctx.tailFails || 0) + 1; ctx.tailWs = null; renderActivity(); setTimeout(() => ctx === cur && !ctx.tailWs && openChat(), 2000); } };
 }
+// The server skips the "finished" push for a session whose page is in front right now.
+function sendVisible() { const ws = cur?.tailWs; if (ws?.readyState === 1) ws.send(JSON.stringify({ t: "vis", v: document.visibilityState === "visible" && !$("#chat").hidden })); }
 function loadEarlier() {
   if (!cur?.tailWs) return;
   const first = $("#events").querySelector(".ev[data-id]");
@@ -843,7 +863,7 @@ function fitTerm(force) {
 }
 // Whichever device you touch last owns the PTY size (tmux "latest client").
 addEventListener("focus", () => fitTerm(true));
-document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") { fitTerm(true); poll(); } });
+document.addEventListener("visibilitychange", () => { sendVisible(); if (document.visibilityState === "visible") { fitTerm(true); poll(); } });
 
 // ───────────── key bar (touch keyboards lack Esc / Tab / arrows / ctrl) ─────────────
 const KEYS = [
@@ -1039,6 +1059,7 @@ addEventListener("keydown", (e) => {
 
 if ("serviceWorker" in navigator && window.isSecureContext) navigator.serviceWorker.register("/sw.js").then(refreshBell).catch(() => {});
 else refreshBell();
+ensurePush();
 await Promise.all([initLang(), loadPluginUi()]); // plug-ins before the first route, so a page like #/cleanse is known
 if (loadSnapshot()) { go(); await poll(); } // last known lists first, fresh ones as soon as they arrive
 else { await poll(); go(); }
