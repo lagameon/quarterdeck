@@ -1,5 +1,6 @@
 #!/usr/bin/env bun
-// Daily activity + token usage from Claude Code transcripts (~/.claude/projects/**.jsonl, incl. subagents).
+// Daily activity + token usage from Claude Code transcripts (<config dir>/projects/**.jsonl, incl. subagents),
+// for every account: the server passes each profile's projects folder in QUARTERDECK_PROJECT_DIRS.
 // Incremental: files are append-only, so each run reads only bytes added since the last run.
 // Output: KB/stats_cache.json (per-file offsets + per-local-day aggregates). Read-only on the transcripts.
 import { readdirSync, statSync, existsSync, readFileSync, writeFileSync, renameSync, openSync, readSync, closeSync } from "node:fs";
@@ -7,15 +8,22 @@ import { join, basename, dirname } from "node:path";
 import { homedir } from "node:os";
 
 const HOME = homedir();
-const PROJECTS = join(HOME, ".claude/projects");
+const PROJECT_DIRS = (process.env.QUARTERDECK_PROJECT_DIRS || "").split(":").filter(Boolean);
+if (!PROJECT_DIRS.length) PROJECT_DIRS.push(join(HOME, ".claude/projects"));
+function* allFiles(): Generator<string> { for (const d of PROJECT_DIRS) yield* walk(d); }
 const KB = process.env.QUARTERDECK_DATA_DIR || join(HOME, ".local/share/quarterdeck");
 const CACHE = join(KB, "stats_cache.json");
 const KEEP_DAYS = 35;
 const SKIP_OLDER_MS = 31 * 86400000;
 
 type Day = { out: number; inp: number; cr: number; cw: number; turns: number; prompts: number; tools: number; sessions: Record<string, number>; models: Record<string, number> };
-type Cache = { files: Record<string, { size: number; off: number }>; days: Record<string, Day>; updatedAt?: string; lastRunMs?: number };
-const cache: Cache = existsSync(CACHE) ? JSON.parse(readFileSync(CACHE, "utf8")) : { files: {}, days: {} };
+// `files` is keyed by the transcript's identity (session id, or session id + sub-agent file), NOT its path:
+// Claude Code moves a session's transcript to another project folder whenever the session changes directory
+// (entering a worktree, for one), and a path key made every move count the whole file again — a session that
+// moved ten times showed ten times its tokens. v2 = identity keys; an older cache is rebuilt from the transcripts.
+type Cache = { v?: number; files: Record<string, { size: number; off: number }>; days: Record<string, Day>; updatedAt?: string; lastRunMs?: number };
+let cache: Cache = existsSync(CACHE) ? JSON.parse(readFileSync(CACHE, "utf8")) : { v: 2, files: {}, days: {} };
+if (cache.v !== 2) cache = { v: 2, files: {}, days: {} };
 const localDay = (ts: string) => new Date(ts).toLocaleDateString("sv"); // YYYY-MM-DD in the Mac's timezone
 const dayOf = (d: string): Day => (cache.days[d] ||= { out: 0, inp: 0, cr: 0, cw: 0, turns: 0, prompts: 0, tools: 0, sessions: {}, models: {} });
 
@@ -26,12 +34,15 @@ function* walk(dir: string): Generator<string> {
 }
 // Main session id: <project>/<sid>.jsonl, or <project>/<sid>/subagents/agent-*.jsonl → the parent sid.
 const sessionOf = (p: string) => p.includes("/subagents/") ? basename(dirname(dirname(p))) : basename(p, ".jsonl");
+const keyOf = (p: string) => p.includes("/subagents/") ? `${sessionOf(p)}/${basename(p)}` : sessionOf(p);
+const alive = new Set<string>();
 
 const t0 = Date.now(); let bytes = 0, files = 0;
-for (const p of walk(PROJECTS)) {
+for (const p of allFiles()) {
   let st; try { st = statSync(p); } catch { continue; }
-  if (Date.now() - st.mtimeMs > SKIP_OLDER_MS && !cache.files[p]) continue;
-  const f = (cache.files[p] ||= { size: 0, off: 0 });
+  const key = keyOf(p); if (alive.has(key)) continue; alive.add(key);   // the same session under two accounts' folders (a shared link): once
+  if (Date.now() - st.mtimeMs > SKIP_OLDER_MS && !cache.files[key]) continue;
+  const f = (cache.files[key] ||= { size: 0, off: 0 });
   if (st.size < f.off) f.off = st.size; // rewritten/truncated: can't un-count, just move on
   if (st.size === f.off) continue;
   const sid = sessionOf(p); const isSub = p.includes("/subagents/");
@@ -71,7 +82,7 @@ for (const p of walk(PROJECTS)) {
 // Prune old days and files no longer present.
 const cutoff = new Date(Date.now() - KEEP_DAYS * 86400000).toLocaleDateString("sv");
 for (const d of Object.keys(cache.days)) if (d < cutoff) delete cache.days[d];
-for (const p of Object.keys(cache.files)) if (!existsSync(p)) delete cache.files[p];
+for (const k of Object.keys(cache.files)) if (!alive.has(k)) delete cache.files[k];
 cache.updatedAt = new Date().toISOString(); cache.lastRunMs = Date.now() - t0;
 writeFileSync(CACHE + ".tmp", JSON.stringify(cache), { mode: 0o600 }); renameSync(CACHE + ".tmp", CACHE);
 console.log(JSON.stringify({ files, mb: Math.round(bytes / 1e6), ms: Date.now() - t0, days: Object.keys(cache.days).length }));

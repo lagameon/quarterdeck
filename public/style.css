@@ -423,3 +423,9 @@ body.stale .brand::after { content: " ⟳"; color: var(--dim); font-weight: 400;
 @keyframes bgspin { to { transform: rotate(360deg); } }
 @media (prefers-reduced-motion: reduce) { .bgchip .spin { animation: none; } }
 details.tool.flash { outline: 2px solid var(--accent2); outline-offset: 2px; border-radius: 6px; }
+
+/* overview: how today's tokens split across machines */
+.ov-m { display: flex; flex-wrap: wrap; gap: 4px 14px; margin: 8px 2px 0; font-size: 12px; color: var(--dim); }
+.ov-m b { color: var(--text); font-weight: 600; }
+.ov-m .warn { color: var(--warn); }
+.top-s a .hostchip { font-style: normal; font-size: 11px; color: var(--dim); border: 1px solid var(--line); border-radius: 4px; padding: 0 4px; }

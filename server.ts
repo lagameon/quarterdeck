@@ -732,7 +732,7 @@ const STATS_CACHE = join(DATA_DIR, "stats_cache.json");
 let statsRunning = false;
 function refreshStats() {
   if (statsRunning) return; statsRunning = true;
-  const p = Bun.spawn(["nice", "-n", "10", "bun", join(import.meta.dir, "lib/stats.ts")], { stdout: "ignore", stderr: "pipe", env: { ...childEnv(), QUARTERDECK_DATA_DIR: DATA_DIR } });
+  const p = Bun.spawn(["nice", "-n", "10", "bun", join(import.meta.dir, "lib/stats.ts")], { stdout: "ignore", stderr: "pipe", env: { ...childEnv(), QUARTERDECK_DATA_DIR: DATA_DIR, QUARTERDECK_PROJECT_DIRS: projectRoots().join(":") } });
   p.exited.then(() => { statsRunning = false; });
 }
 setInterval(refreshStats, 5 * 60_000); setTimeout(refreshStats, 5000);
@@ -745,7 +745,20 @@ async function quotaStatus() {
     return { ok: !q.err && ageH < 1, ageHours: Math.round(ageH * 10) / 10, err: q.err || "", bars: (q.bars || []).map((b: any) => ({ label: b.label, codex: b.id === "codex", h: b.h, w: b.w, state: b.state, note: b.note, ageHours: Math.round((b.age || 0) / 360) / 10 })) };
   } catch (e: any) { return { ok: false, ageHours: null, err: `quota endpoint unreachable: ${e?.message}`, bars: [] }; }
 }
-async function statsApi(daysN: number) {
+// A node's own numbers, for the hub's totals. Kept for a minute; a node that does not answer is reported, not guessed.
+const nodeStatsCache = new Map<string, { at: number; d: any }>();
+async function nodeStats(n: NodeConf, daysN: number): Promise<any | null> {
+  const key = `${n.id}:${daysN}`; const c = nodeStatsCache.get(key);
+  if (c && Date.now() - c.at < 60_000) return c.d;
+  try {
+    const r = await fetch(`${n.url}/api/stats?days=${daysN}&local=1`, { signal: AbortSignal.timeout(5000) });
+    const d = r.ok ? await r.json() : null; if (!d?.ready) return null;
+    nodeStatsCache.set(key, { at: Date.now(), d }); return d;
+  } catch { return null; }
+}
+// `localOnly`: this machine's numbers alone (what the hub asks a node for). Otherwise the hub adds every node:
+// the overview is about all your machines, like the session lists are.
+async function statsApi(daysN: number, localOnly = false) {
   if (!existsSync(STATS_CACHE)) { refreshStats(); return { ready: false }; }
   const c = JSON.parse(readFileSync(STATS_CACHE, "utf8"));
   const days: any[] = [];
@@ -761,7 +774,23 @@ async function statsApi(daysN: number) {
     const f = findSessionFile(sid); const t = f ? transcriptInfo(f, basename(join(f, ".."))) : null;
     return { name: t?.title || sid.slice(0, 8), href: `#/t/${sid}`, tokens: tok };
   }) : [];
-  return { ready: true, updatedAt: c.updatedAt, days, top, quota: await quotaStatus() };
+  const last = days[days.length - 1];
+  if (localOnly) return { ready: true, updatedAt: c.updatedAt, days, top, quota: null };
+  const machines: any[] = [{ id: FLEET.self.id, label: FLEET.self.label, ok: true, out: last.out, inp: last.inp + last.cr }];
+  const theirs = await Promise.all(FLEET.nodes.map((n) => nodeStats(n, daysN)));
+  let all = top as { name: string; href: string; tokens: number }[];
+  FLEET.nodes.forEach((n, i) => {
+    const d = theirs[i]; if (!d) { machines.push({ id: n.id, label: n.label, ok: false }); return; }
+    for (const x of d.days as any[]) {
+      const m = days.find((y) => y.date === x.date); if (!m) continue;
+      for (const k of ["out", "inp", "cr", "turns", "prompts", "tools", "sessions"]) m[k] += Number(x[k]) || 0;
+      for (const [k, v] of Object.entries(x.models || {})) m.models[k] = (m.models[k] || 0) + (Number(v) || 0);
+    }
+    const t = d.days[d.days.length - 1]; machines.push({ id: n.id, label: n.label, ok: true, out: t?.out || 0, inp: (t?.inp || 0) + (t?.cr || 0) });
+    all = all.concat((d.top || []).map((x: any) => ({ name: String(x.name), href: `${String(x.href)}/${n.id}`, tokens: Number(x.tokens) || 0, node: n.label })));
+  });
+  all = all.sort((a, b) => b.tokens - a.tokens).slice(0, 5);
+  return { ready: true, updatedAt: c.updatedAt, days, top: all, quota: await quotaStatus(), machines: FLEET.nodes.length ? machines : undefined };
 }
 
 // Runs Claude Code's own updater on this machine (`claude update`: native installs update themselves, package-manager
@@ -1178,7 +1207,7 @@ async function handle(req: Request, server: any): Promise<Response | undefined> 
       const j = listJobs().find((x) => x.id === id);
       return j ? json(j) : json({ error: "not found" }, 404);
     }
-    if (path === "/api/stats") return json(await statsApi(Math.min(31, Math.max(7, Number(url.searchParams.get("days")) || 14))));
+    if (path === "/api/stats") return json(await statsApi(Math.min(31, Math.max(7, Number(url.searchParams.get("days")) || 14)), url.searchParams.get("local") === "1"));
     if (path === "/api/push/key") return json({ publicKey: vapid.publicKey, devices: subs.map((x) => ({ label: x.label, at: x.at, endpoint: x.subscription.endpoint.slice(0, 60) })), telegram: !!notifyConf().telegram?.token });
     if (path === "/api/changes") {
       const c = await sessionChanges(url.searchParams.get("session") || "");

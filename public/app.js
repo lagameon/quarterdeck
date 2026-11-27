@@ -374,7 +374,7 @@ function renderOverview() {
   const st = stats; const el = $("#overview"); if (!el) return;
   const jobsNow = { run: data.jobs.filter((j) => jobState(j) === "working").length, wait: data.jobs.filter(isBlocked).length,
     doneToday: data.jobs.filter((j) => j.state === "done" && j.updatedAt && new Date(j.updatedAt).toDateString() === new Date().toDateString()).length };
-  const sig = JSON.stringify([st?.updatedAt, st?.quota, jobsNow, wide(), ovOpen(), data.accounts]); if (sig === overviewSig) return; overviewSig = sig;
+  const sig = JSON.stringify([st?.updatedAt, st?.quota, st?.machines, jobsNow, wide(), ovOpen(), data.accounts]); if (sig === overviewSig) return; overviewSig = sig;
   if (!st?.ready) { el.innerHTML = `<div class="empty">${t("building usage stats…")}</div>`; return; }
   const td = st.days[st.days.length - 1];
   const tile = (label, val, sub = "") => `<div class="tile"><div class="tv">${val}</div><div class="tl">${label}</div>${sub ? `<div class="ts2">${sub}</div>` : ""}</div>`;
@@ -403,6 +403,9 @@ function renderOverview() {
     $("#ovToggle").onclick = () => { store.set("ovOpen", "1"); overviewSig = ""; renderOverview(); };
     return;
   }
+  // The numbers cover every machine; say how they split, and say so when one could not be counted.
+  const ms = st.machines || []; const off = ms.filter((m) => !m.ok);
+  const byMachine = ms.length < 2 ? "" : `<div class="ov-m">${t("All machines")}: ${ms.filter((m) => m.ok).map((m) => `<span>${esc(m.label)} <b>${fmtTok(m.out)}</b> ${t("out")} · ${fmtTok(m.inp)} ${t("in")}</span>`).join("")}${off.length ? `<span class="warn">⚠ ${t("not counted (offline): {m}", { m: esc(off.map((m) => m.label).join(", ")) })}</span>` : ""}</div>`;
   const models = Object.entries(td.models || {}).sort((a, b) => b[1] - a[1]).map(([m, v]) => `${esc(m)} ${fmtTok(v)}`).join(" · ");
   el.innerHTML = `<h2>${t("Today")}<span class="count">${esc(td.date)}</span><span class="ov-upd">${ago(st.updatedAt) === "now" ? t("stats updated just now") : t("stats updated {t} ago", { t: ago(st.updatedAt) })}</span></h2>
     <div class="tiles">
@@ -411,11 +414,12 @@ function renderOverview() {
       ${tile(t("output tokens"), fmtTok(td.out), models)}${tile(t("input tokens"), fmtTok(td.inp + td.cr), t("{n} from cache", { n: fmtTok(td.cr) }))}
       ${quota}${acctTiles}
     </div>
+    ${byMachine}
     <div class="charts">
       ${barChart(t("Output tokens per day (14 days)"), st.days, (d) => d.out, (d) => `${d.date}<br>${t("output {o} · input {i}", { o: fmtTok(d.out), i: fmtTok(d.inp + d.cr) })}<br>${t("{t} turns · {n} tool calls", { t: d.turns, n: d.tools })}`, fmtTok)}
       ${barChart(t("Active sessions per day (14 days)"), st.days, (d) => d.sessions, (d) => `${d.date}<br>${t("{s} active sessions · {p} messages from you", { s: d.sessions, p: d.prompts })}`, String)}
     </div>
-    ${st.top.length ? `<div class="top-s"><div class="tl">${t("Top sessions by tokens today")}</div>${st.top.map((x) => `<a href="${x.href}"><span>${esc(x.name)}</span><b>${fmtTok(x.tokens)}</b></a>`).join("")}</div>` : ""}`;
+    ${st.top.length ? `<div class="top-s"><div class="tl">${t("Top sessions by tokens today")}</div>${st.top.map((x) => `<a href="${x.href}"><span>${x.node ? `<i class="hostchip">${esc(x.node)}</i> ` : ""}${esc(x.name)}</span><b>${fmtTok(x.tokens)}</b></a>`).join("")}</div>` : ""}`;
   if (!wide()) { const b = document.createElement("button"); b.className = "ov-x"; b.textContent = "▴"; b.title = t("Collapse"); b.onclick = () => { store.set("ovOpen", "0"); overviewSig = ""; renderOverview(); }; el.querySelector("h2")?.appendChild(b); }
   el.querySelectorAll(".bar").forEach((b) => {
     b.addEventListener("mouseenter", (e) => showTip(b.dataset.tip, e)); b.addEventListener("mousemove", (e) => showTip(b.dataset.tip, e));

@@ -66,7 +66,7 @@ const zh = {
   "Today · {out} out · {turns} turns · {done} done": "今天 · 输出 {out} · {turns} 回合 · 完成 {done}", " · quota {q}": " · 额度 {q}",
   "Today": "今天", "stats updated just now": "统计刚刚更新", "stats updated {t} ago": "统计更新于 {t} 前",
   "done today": "今天完成", "active sessions": "活跃会话", "your messages": "你发的消息", "Claude turns": "Claude 回合", "{n} tool calls": "工具调用 {n} 次",
-  "output tokens": "输出 tokens", "input tokens": "读入 tokens", "{n} from cache": "其中缓存命中 {n}",
+  "output tokens": "输出 tokens", "All machines": "所有机器", "out": "输出", "in": "读入", "not counted (offline): {m}": "未计入（离线）：{m}", "input tokens": "读入 tokens", "{n} from cache": "其中缓存命中 {n}",
   "Output tokens per day (14 days)": "每天输出 tokens（14 天）", "Active sessions per day (14 days)": "每天活跃会话（14 天）",
   "output {o} · input {i}": "输出 {o} · 读入 {i}", "{t} turns · {n} tool calls": "{t} 回合 · 工具 {n} 次", "{s} active sessions · {p} messages from you": "活跃会话 {s} · 你发的消息 {p}",
   "Top sessions by tokens today": "今天最耗 tokens 的会话", "Collapse": "收起",
