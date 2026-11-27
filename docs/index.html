@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Quarterdeck — the no-wrapper, no-relay remote for Claude Code</title>
+<meta name="description" content="Self-hosted remote for Claude Code: watch, drive and continue your own sessions on your own machines from a phone, over Tailscale. No wrapper, no relay server, no app to install.">
+<meta property="og:title" content="Quarterdeck — the no-wrapper, no-relay remote for Claude Code">
+<meta property="og:description" content="Your own Claude Code sessions, on your own machines, from your phone — over Tailscale. Open source (MIT).">
+<meta property="og:image" content="https://lagameon.github.io/quarterdeck/img/dashboard-desktop.png">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%23d97757'/%3E%3Cpath d='M9 11l6 5-6 5M17 21h6' stroke='%23fff' stroke-width='2.6' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="site.css">
+</head>
+<body>
+<div class="wrap">
+<header class="top">
+  <a class="brand" href="./">Quarterdeck</a>
+  <a class="hide-s" href="#how">How it works</a>
+  <a href="compare.html">Compare</a>
+  <a href="https://github.com/lagameon/quarterdeck#install">Install</a>
+  <a href="https://github.com/lagameon/quarterdeck">GitHub</a>
+</header>
+
+<section class="hero">
+  <div>
+    <h1>Claude Code from your phone. <em>No wrapper, no relay.</em></h1>
+    <p class="lede">Watch, drive and continue your own Claude Code sessions on your own machines — from a phone, an iPad or another laptop. It runs on your computer and is reachable only inside your Tailscale network.</p>
+    <div class="cta">
+      <a class="btn primary" href="https://github.com/lagameon/quarterdeck#install">Install</a>
+      <a class="btn" href="https://github.com/lagameon/quarterdeck">Source on GitHub</a>
+      <a class="btn" href="compare.html">How it compares</a>
+    </div>
+  </div>
+  <img src="img/demo.gif" alt="A reply being typed out in the Chat view, then a question from Claude answered with one tap">
+</section>
+
+<h2>What makes it different</h2>
+<p class="sub">Most remotes for coding agents wrap the agent in their own launcher and sync your sessions through a relay server. Quarterdeck does neither.</p>
+<div class="grid">
+  <div class="card"><h3><span class="no">No</span> wrapper</h3><p>Built on Claude Code's own background sessions. Start a session anywhere — a terminal, a script — and it shows up by itself. The Terminal view is the real TUI.</p></div>
+  <div class="card"><h3><span class="no">No</span> relay, account or cloud</h3><p>The server listens on loopback and your Tailscale address, and admits one Tailscale login: yours. There is no service of ours in the middle.</p></div>
+  <div class="card"><h3><span class="no">No</span> app to install</h3><p>A web page you add to the Home Screen, with real push notifications when a session needs you or finishes.</p></div>
+  <div class="card"><h3>Several machines, one page</h3><p>Desktop, laptop and GPU box side by side, with disk, load, GPU, Claude Code version and login expiry for each.</p></div>
+  <div class="card"><h3>Several Claude accounts</h3><p>Keep more than one account signed in side by side and choose the account when you start or resume a session.</p></div>
+  <div class="card"><h3>Small enough to read</h3><p>About three thousand lines, no build step, a written security model. Private features go in plug-ins, not forks.</p></div>
+</div>
+
+<figure><img src="img/dashboard-desktop.png" alt="Dashboard with sessions on three machines, today's usage and machine health" loading="lazy"><figcaption>One page for every machine: what needs you, what is running, what finished.</figcaption></figure>
+<figure><img src="img/split-desktop.png" alt="Chat view beside the live terminal, with Claude's question shown as buttons" loading="lazy"><figcaption>Chat beside the real terminal. Claude's questions and permission prompts become buttons.</figcaption></figure>
+<div class="phones">
+  <img src="img/dashboard-phone.png" alt="Phone dashboard" loading="lazy">
+  <img src="img/chat-phone.png" alt="Phone chat with a question as buttons" loading="lazy">
+  <img src="img/new-session-phone.png" alt="Phone: new session with project picker and memory preview" loading="lazy">
+</div>
+
+<h2 id="how">How it works</h2>
+<p class="sub">One small server per machine. It reads Claude Code's own session files and drives its command line; your browser talks to it over Tailscale.</p>
+<pre>phone / iPad / laptop  ──Tailscale──▶  Quarterdeck on your machine  ──▶  claude --bg · claude attach
+                                        (hub: forwards to your other machines, sends the push)</pre>
+<ul class="plain">
+  <li><b>Chat view</b> — the transcript as a conversation, typed out live while Claude writes; tool calls folded with their output.</li>
+  <li><b>Terminal view</b> — the real Claude Code screen, one terminal per session shared by all your devices.</li>
+  <li><b>Changes</b> — the files this session edited, with their diffs.</li>
+  <li><b>New session</b> — pick a project on any machine and see the memory (CLAUDE.md layers) the session will load.</li>
+  <li><b>Notifications</b> — Web Push from your own server; nothing is sent for a session you are looking at.</li>
+</ul>
+<pre>git clone https://github.com/lagameon/quarterdeck &amp;&amp; cd quarterdeck &amp;&amp; bun install
+# set "owner" to your Tailscale login in ~/.config/quarterdeck/config.json
+bun server.ts</pre>
+<p class="note">Needs <a href="https://bun.sh">Bun</a>, <a href="https://tailscale.com">Tailscale</a> and Claude Code on the machine. macOS and Linux. Full instructions in the <a href="https://github.com/lagameon/quarterdeck#install">README</a>.</p>
+
+<h2>What it is not</h2>
+<ul class="plain">
+  <li>It drives <b>Claude Code only</b> — no Codex, OpenCode or other agents.</li>
+  <li>No native app, no voice, no hosted service.</li>
+  <li>It depends on Claude Code's local files and command line, which are not stable public interfaces. When they change, Quarterdeck has to follow.</li>
+</ul>
+
+<footer>MIT licence · not affiliated with Anthropic · <a href="https://github.com/lagameon/quarterdeck">github.com/lagameon/quarterdeck</a> · screenshots show fictional data</footer>
+</div>
+</body>
+</html>

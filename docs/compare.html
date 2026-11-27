@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Quarterdeck compared with Happy, Paseo, CloudCLI and HAPI</title>
+<meta name="description" content="How Quarterdeck differs from other remotes for Claude Code and coding agents: no wrapper, no relay, Tailscale only — and what the others do that it does not.">
+<link rel="stylesheet" href="site.css">
+</head>
+<body>
+<div class="wrap">
+<header class="top">
+  <a class="brand" href="./">Quarterdeck</a>
+  <a href="./">Overview</a>
+  <a href="https://github.com/lagameon/quarterdeck#install">Install</a>
+  <a href="https://github.com/lagameon/quarterdeck">GitHub</a>
+</header>
+
+<h1 style="margin-top:28px">How Quarterdeck compares</h1>
+<p class="lede">There are several good ways to reach a coding agent from your phone. They make different trade-offs; this page says where Quarterdeck sits and when another tool is the better choice.</p>
+<p class="note">The other columns summarise what each project's own README said on 27 November 2026. Projects move fast — check theirs before deciding, and <a href="https://github.com/lagameon/quarterdeck/issues">tell us</a> if something here is out of date.</p>
+
+<div class="tablewrap">
+<table>
+<tr><th></th><th class="us">Quarterdeck</th><th><a href="https://github.com/slopus/happy">Happy</a></th><th><a href="https://github.com/getpaseo/paseo">Paseo</a></th><th><a href="https://github.com/siteboon/claudecodeui">CloudCLI (Claude Code UI)</a></th><th><a href="https://github.com/tiann/hapi">HAPI</a></th></tr>
+<tr><td>Agents</td><td class="us">Claude Code only</td><td>Claude, Codex, Grok and more</td><td>Several coding agents</td><td>Claude Code, OpenCode, Cursor CLI, Codex</td><td>Codex, Claude Code, OpenCode and more</td></tr>
+<tr><td>How sessions start</td><td class="us">Claude Code's own background sessions; anything started anywhere appears</td><td>Its own CLI wraps the agent</td><td>A local daemon manages the agents</td><td>—</td><td>Wraps the agent in your terminal</td></tr>
+<tr><td>How the phone reaches your machine</td><td class="us">Directly, inside your Tailscale network</td><td>Through a relay server (end-to-end encrypted)</td><td>Optional end-to-end encrypted relay</td><td>Hosted cloud, or expose the self-hosted server yourself</td><td>End-to-end encrypted relay, or your own tunnel / Tailscale</td></tr>
+<tr><td>Account with the project</td><td class="us">None</td><td>—</td><td>No forced login</td><td>For the hosted cloud</td><td>—</td></tr>
+<tr><td>On the phone</td><td class="us">Web page on the Home Screen, Web Push</td><td>iOS and Android apps, web</td><td>Mobile, desktop and web apps</td><td>Web</td><td>Web / PWA free; native apps paid</td></tr>
+<tr><td>Several machines in one view</td><td class="us">Yes, with machine health</td><td>—</td><td>—</td><td>—</td><td>—</td></tr>
+<tr><td>Several Claude accounts</td><td class="us">Yes, side by side</td><td>—</td><td>—</td><td>—</td><td>—</td></tr>
+<tr><td>Extending it</td><td class="us">Plug-ins (server routes + page blocks)</td><td>—</td><td>Plug-ins</td><td>Plug-ins</td><td>—</td></tr>
+<tr><td>Size</td><td class="us">About 3,000 lines, no build step</td><td colspan="4">Larger projects with apps, servers and teams behind them</td></tr>
+</table>
+</div>
+<p class="note">“—” means their README did not say, not that the feature is missing.</p>
+
+<h2>Choose Quarterdeck if…</h2>
+<ul class="plain">
+  <li>you already use Tailscale, or want nothing between your phone and your machine but your own network;</li>
+  <li>you want to keep starting Claude Code the way you do now and see <em>those</em> sessions, including the real terminal;</li>
+  <li>you work across several machines, or with more than one Claude account;</li>
+  <li>you want something small you can read and change.</li>
+</ul>
+<h2>Choose something else if…</h2>
+<ul class="plain">
+  <li>you use Codex, OpenCode or other agents — Happy, Paseo, CloudCLI and HAPI all support several;</li>
+  <li>you want a native app, voice, or a polished multi-agent workspace;</li>
+  <li>you don't want to run Tailscale, or you want a hosted service that works without setting anything up.</li>
+</ul>
+
+<footer>MIT licence · not affiliated with Anthropic or with the projects named here · <a href="https://github.com/lagameon/quarterdeck">github.com/lagameon/quarterdeck</a></footer>
+</div>
+</body>
+</html>

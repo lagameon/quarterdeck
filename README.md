@@ -1,8 +1,34 @@
 # Quarterdeck
 
-A self-hosted web remote for **Claude Code background sessions**, reachable only inside your **Tailscale** tailnet. Open it on your phone, iPad or another laptop to see every session, read them as a chat, jump into the real terminal, answer Claude's menus with a tap, and get a push notification when a session needs you.
+**The no-wrapper, no-relay remote for Claude Code.** Your own sessions, on your own machines, reachable only inside your **Tailscale** tailnet — from a phone, an iPad or another laptop.
 
-It is built directly on Claude Code's own background sessions (`claude --bg`, `claude attach`), so sessions you start anywhere — terminal, another Quarterdeck tab, a script — show up automatically. Nothing is proxied through a third-party server.
+<p align="center"><img src="docs/img/demo.gif" width="300" alt="A reply typed out live in the Chat view, then a question answered with one tap"></p>
+
+See every session, read it as a chat while the reply is being written, jump into the real terminal, answer Claude's questions with a tap, and get a push notification when a session needs you.
+
+| | |
+|---|---|
+| ![Dashboard: sessions on three machines, usage, machine health](docs/img/dashboard-desktop.png) | ![Chat beside the live terminal](docs/img/split-desktop.png) |
+| One page for every machine | Chat beside the real terminal |
+
+<p align="center">
+<img src="docs/img/dashboard-phone.png" width="230" alt="Phone: what needs you comes first">
+<img src="docs/img/chat-phone.png" width="230" alt="Phone: a question from Claude as buttons">
+<img src="docs/img/new-session-phone.png" width="230" alt="Phone: pick a project and see the memory the session will load">
+</p>
+
+## How it differs
+
+Most remotes for coding agents wrap the agent in their own launcher and sync through a relay server. Quarterdeck does neither:
+
+- **No wrapper.** It is built on Claude Code's own background sessions (`claude --bg`, `claude attach`). Sessions you start anywhere — a terminal, a script, another tab — show up by themselves, and what you see in the Terminal view is the real TUI, not a re-implementation.
+- **No relay, no account, no cloud.** The server listens on loopback and your Tailscale address only, and admits one Tailscale login: yours. Nothing goes through a third-party server; there is no service of ours that could be down.
+- **No app to install.** A web page you add to the Home Screen, with real push notifications.
+- **Several machines, one page.** A desktop, a laptop and a GPU box side by side, with disk, load, GPU, Claude Code version and login expiry for each.
+- **Several Claude accounts side by side**, each with its own login and sessions.
+- **Small enough to read.** About three thousand lines, no build step, and a [security model](#security-model) written down. Private features go in [plug-ins](#plug-ins), not forks.
+
+What it is not: it drives Claude Code only (no other agents), and it has no native app. A longer comparison is on the [project page](https://lagameon.github.io/quarterdeck/compare.html).
 
 > Not affiliated with Anthropic. Quarterdeck reads Claude Code's local files and drives its CLI; those are not stable public interfaces (see [Limitations](#limitations)).
 
@@ -175,6 +201,8 @@ If you run a collector that exposes JSON like below, set `quotaUrl` and the over
 ## Development
 
 `server.ts` (API, auth, transcript parser, PTY hub, push, stats endpoint) · `menu.ts` (menu parser) · `lib/stats.ts` (incremental usage stats) · `public/` (the page; plain ES modules, no build step).
+
+**Screenshots and releases.** `python3 scripts/demo/shots.py` regenerates `docs/img/` (it starts a throw-away server and answers every request from fictional data in `scripts/demo/fixtures.py`, so no real session can end up in a picture). `scripts/release.sh` prints the notes for the next release from the commit subjects; `--publish` tags it and creates the GitHub release. The project page in `docs/` is plain HTML served by GitHub Pages.
 
 ## License
 
