@@ -490,7 +490,7 @@ class Tail {
 type WsAuth = { who: string; peer?: string }; // peer = tailnet address to re-check (absent for plain local)
 // A chat stream ("tail") also carries the menu of its session (target) and knows whether its page is in front
 // (visible) — so a finished turn isn't pushed to a phone while its owner is reading that very session.
-type WsData = ({ kind: "pty"; key: string } | { kind: "tail"; tail: Tail; limit: number; timer?: Timer; target?: string; menuSig?: string; liveSig?: string; visible?: boolean }
+type WsData = ({ kind: "pty"; key: string } | { kind: "tail"; tail: Tail; limit: number; timer?: Timer; target?: string; menuSig?: string; liveSig?: string; liveAcc?: string; visible?: boolean }
   | { kind: "proxy"; target: string; queue: (string | Buffer)[]; up?: WebSocket; visible?: boolean }) & WsAuth;
 const openSockets = new Set<ServerWebSocket<WsData>>();
 const RING = 400_000;
@@ -1258,8 +1258,21 @@ const websocket = {
         const menu = parseMenu(p.lines()); const sig = menu ? JSON.stringify(menu) : "";
         if (sig !== d.menuSig) { d.menuSig = sig; ws.send(JSON.stringify({ t: "menu", menu })); }
         // The reply being written right now, read off the screen (the transcript only gets it when it is complete).
-        const live = menu ? null : liveText(p.lines(), p.cols); const lsig = live ? (live.partial ? "…" : "") + live.text : "";
-        if (lsig !== (d.liveSig || "")) { d.liveSig = lsig; ws.send(JSON.stringify({ t: "live", text: live?.text || "", partial: !!live?.partial })); }
+        // A long reply scrolls: the screen then holds only its tail. Each tail overlaps what was seen before, so the
+        // text is kept from its beginning and only the new part is appended.
+        const live = menu ? null : liveText(p.lines(), p.cols);
+        let acc = "";
+        if (live) {
+          const prev = d.liveAcc || "";
+          if (!live.partial || !prev) acc = live.text;
+          else {
+            const head = live.text.slice(0, 48); const at = head.length >= 12 ? prev.lastIndexOf(head) : -1;
+            acc = at >= 0 ? prev.slice(0, at) + live.text : prev.endsWith(live.text) ? prev : live.text; // no overlap found → start over from the tail
+          }
+          if (acc.length > 60_000) acc = acc.slice(-60_000);
+        }
+        d.liveAcc = acc;
+        if (acc !== (d.liveSig || "")) { d.liveSig = acc; ws.send(JSON.stringify({ t: "live", text: acc })); }
       };
       let tick = 0;
       d.timer = setInterval(() => {

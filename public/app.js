@@ -664,18 +664,41 @@ function openChat(opt = {}) {
 }
 // The server skips the "finished" push for a session whose page is in front right now.
 function sendVisible() { const ws = cur?.tailWs; if (ws?.readyState === 1) ws.send(JSON.stringify({ t: "vis", v: document.visibilityState === "visible" && !$("#chat").hidden })); }
-// The reply being written right now (read off the terminal screen by the server): shown as a preview bubble at the
-// end of the chat and replaced by the real message as soon as the transcript has it.
+// The reply being written right now (read off the terminal screen by the server). It looks like any other reply and
+// is typed out smoothly; when the transcript delivers the finished message, this same element becomes that message.
+const live = { target: "", shown: 0, raf: 0, drawn: 0, endTimer: 0 };
+function liveEl(create) {
+  let el = $("#liveText"); if (el || !create) return el;
+  el = document.createElement("div"); el.id = "liveText"; el.className = "ev assistant live";
+  const ev = $("#events"), act = $("#activity");
+  if (act && act.parentNode === ev) ev.insertBefore(el, act); else ev.appendChild(el);
+  return el;
+}
+function liveStop() { cancelAnimationFrame(live.raf); clearTimeout(live.endTimer); live.raf = 0; live.endTimer = 0; live.target = ""; live.shown = 0; live.drawn = 0; }
+function liveDrop() { liveStop(); $("#liveText")?.remove(); }
+function liveFrame() {
+  live.raf = 0; const el = liveEl(false); if (!el) return liveStop();
+  const left = live.target.length - live.shown;
+  if (left > 0) live.shown += Math.max(1, Math.ceil(left / 14));           // catches up quickly when far behind, eases out at the end
+  const now = performance.now();
+  if (left <= 0 || now - live.drawn > 45) {                                  // re-render at most ~20×/s
+    const chat = $("#chat"); const stick = chat.scrollHeight - chat.scrollTop - chat.clientHeight < 160;
+    el.innerHTML = md(live.target.slice(0, live.shown)); live.drawn = now;
+    if (stick) chat.scrollTop = chat.scrollHeight;
+  }
+  if (live.shown < live.target.length) live.raf = requestAnimationFrame(liveFrame);
+}
 function renderLive(d) {
-  const ev = $("#events"), chat = $("#chat"); let el = $("#liveText");
-  if (!d.text) { el?.remove(); return; }
-  const stick = chat.scrollHeight - chat.scrollTop - chat.clientHeight < 160;
-  if (!el) { el = document.createElement("div"); el.id = "liveText"; el.className = "ev assistant live"; el.innerHTML = `<div class="live-tag"></div><div class="live-body"></div>`; }
-  el.querySelector(".live-tag").textContent = t(d.partial ? "writing… (showing the latest part)" : "writing…");
-  el.querySelector(".live-body").innerHTML = md(d.text);
-  const act = $("#activity");
-  if (act && act.parentNode === ev) ev.insertBefore(el, act); else if (ev.lastElementChild !== el) ev.appendChild(el);
-  if (stick) chat.scrollTop = chat.scrollHeight;
+  const text = d.text || "";
+  if (!text) {                                   // the turn left the screen: the finished message is about to arrive — keep the text until then
+    if ($("#liveText") && !live.endTimer) live.endTimer = setTimeout(liveDrop, 4000);
+    return;
+  }
+  clearTimeout(live.endTimer); live.endTimer = 0;
+  liveEl(true);
+  if (!text.startsWith(live.target.slice(0, live.shown))) { let i = 0; const n = Math.min(live.shown, text.length); while (i < n && text[i] === live.target[i]) i++; live.shown = i; } // the screen re-flowed
+  live.target = text;
+  if (!live.raf) live.raf = requestAnimationFrame(liveFrame);
 }
 function loadEarlier() {
   if (!cur?.tailWs) return;
@@ -817,8 +840,13 @@ function addEvent(e) {
     nd.textContent = t("new since {t}", { t: today ? at.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : at.toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }) });
     ev.appendChild(nd); cur.newDiv = nd;
   }
-  if (e.k === "assistant" || e.k === "tool") $("#liveText")?.remove();
-  const div = document.createElement("div"); div.className = `ev ${e.k}`; if (e.id) div.dataset.id = e.id;
+  // The reply that was being typed out is now final: the same element becomes the message (no remove-and-redraw).
+  let div = null;
+  if (e.k === "assistant" && $("#liveText")) { div = $("#liveText"); liveStop(); div.removeAttribute("id"); div.className = "ev assistant"; div.innerHTML = ""; }
+  else if (e.k === "tool" || e.k === "user") liveDrop();
+  const reused = !!div;
+  if (!div) div = document.createElement("div");
+  div.className = `ev ${e.k}`; if (e.id) div.dataset.id = e.id;
   if (e.k === "user" || e.k === "system") div.textContent = e.text;
   else if (e.k === "assistant") div.innerHTML = md(e.text);
   else if (e.k === "tool") {
@@ -832,7 +860,7 @@ function addEvent(e) {
       det.addEventListener("toggle", () => det.open && pollSub(e.toolId, true));
     }
   }
-  ev.appendChild(div);
+  if (!reused) ev.appendChild(div);
 }
 
 // ───────────── changes (files this session edited, with diffs) ─────────────
@@ -1003,7 +1031,7 @@ function teardown() {
   if (!cur) return;
   cur.closing = true; clearInterval(cur.promptTimer); $("#promptCard").hidden = true; $("#promptCard").innerHTML = "";
   cur.tailWs?.close(); cur.ptyWs?.close(); cur.ro?.disconnect(); cur.term?.dispose();
-  cur = null; $("#events").innerHTML = ""; $("#xterm").innerHTML = ""; $("#changes").innerHTML = ""; delete $("#changes").dataset.loaded; $("#jump").hidden = true;
+  liveStop(); cur = null; $("#events").innerHTML = ""; $("#xterm").innerHTML = ""; $("#changes").innerHTML = ""; delete $("#changes").dataset.loaded; $("#jump").hidden = true;
 }
 
 // ───────────── new session ─────────────

@@ -402,8 +402,7 @@ body.stale .brand::after { content: " ⟳"; color: var(--dim); font-weight: 400;
    CJK lines ran past the right edge. Measure and draw them untrimmed. */
 .xterm, .xterm * { text-spacing-trim: space-all; }
 .mrow button.mini { font-size: 11px; padding: 1px 8px; border-radius: 8px; margin-left: 4px; }
-/* live preview of the reply being written (replaced by the finished message) */
-.ev.assistant.live { opacity: .92; border-left: 2px solid var(--accent2); padding-left: 10px; }
-.ev.assistant.live .live-tag { font-size: 11px; color: var(--accent2); margin-bottom: 2px; }
-.ev.assistant.live .live-body > :last-child::after { content: "▍"; color: var(--accent2); animation: qd-blink 1s steps(2) infinite; margin-left: 2px; }
+/* the reply being written: looks like any reply, with a caret at the end until it is final */
+.ev.assistant.live > :last-child::after { content: "▍"; color: var(--accent2); animation: qd-blink 1s steps(2) infinite; margin-left: 2px; }
+.ev.assistant.live:empty::after { content: "▍"; color: var(--accent2); animation: qd-blink 1s steps(2) infinite; }
 @keyframes qd-blink { 50% { opacity: 0; } }
