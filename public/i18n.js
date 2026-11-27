@@ -30,7 +30,9 @@ const zh = {
   // accounts
   "default": "默认", "not logged in": "未登录",
   // in-page notices
-  "needs you": "需要你", "Push on for this device — click to send a test": "这台设备已开推送——点一下发测试",
+  "needs you": "需要你", "Notifications are on for this device — tap for a test or to turn them off": "这台设备已开通知——点一下可发测试或关闭",
+  "Send a test notification": "发一条测试通知", "Turn notifications off on this device": "在这台设备上关闭通知",
+  "Notifications are off on this device. Tap the bell to turn them on again.": "这台设备的通知已关闭。再点铃铛可以重新开启。",
   "Enable push notifications on this device": "在这台设备上开启推送",
   "Push needs the HTTPS address, opened from the Home Screen app (see README)": "推送需要用 HTTPS 地址，并从主屏幕 App 打开（见 README）",
   "Push needs HTTPS or localhost (see README)": "推送需要 HTTPS 或 localhost（见 README）",

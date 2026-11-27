@@ -401,3 +401,6 @@ body.stale .brand::after { content: " ⟳"; color: var(--dim); font-weight: 400;
    character alone (= at a line start) and then pads it to two cells, so every such mark came out too wide and long
    CJK lines ran past the right edge. Measure and draw them untrimmed. */
 .xterm, .xterm * { text-spacing-trim: space-all; }
+/* small menu under a header button (the bell) */
+.popmenu { position: fixed; z-index: 50; display: flex; flex-direction: column; gap: 4px; padding: 6px; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; box-shadow: 0 8px 24px #0008; }
+.popmenu button { text-align: left; white-space: nowrap; }

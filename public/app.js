@@ -204,7 +204,7 @@ async function pushState() {
   const reg = await navigator.serviceWorker.getRegistration(); const sub = await reg?.pushManager.getSubscription();
   return sub ? "on" : "off";
 }
-async function refreshBell() { const st = await pushState().catch(() => "off"); $("#notif").textContent = st === "on" ? "🔔" : "🔕"; $("#notif").title = st === "on" ? t("Push on for this device — click to send a test") : t("Enable push notifications on this device"); }
+async function refreshBell() { const st = await pushState().catch(() => "off"); $("#notif").textContent = st === "on" ? "🔔" : "🔕"; $("#notif").title = st === "on" ? t("Notifications are on for this device — tap for a test or to turn them off") : t("Enable push notifications on this device"); }
 const pushLabel = () => `${/iPhone/.test(navigator.userAgent) ? "iPhone" : /iPad/.test(navigator.userAgent) ? "iPad" : /Mac/.test(navigator.userAgent) ? "Mac" : "device"} · ${navigator.userAgent.match(/(Chrome|Safari|Firefox|Edg)\/[\d.]+/)?.[0] || ""}`;
 // A device that had push switched on keeps it: the subscription is re-created if the browser dropped it (expired,
 // app re-installed) and re-announced to the server on every open (the server may have forgotten it).
@@ -219,6 +219,33 @@ async function ensurePush() {
     refreshBell();
   } catch (e) { console.warn("push:", e); }
 }
+// Bell while push is on: a small menu under it — send a test, or switch push off on this device.
+function bellMenu(sub) {
+  const old = $("#bellMenu"); if (old) { old.remove(); return; }
+  const m = document.createElement("div"); m.id = "bellMenu"; m.className = "popmenu";
+  m.innerHTML = `<button data-a="test">${t("Send a test notification")}</button><button data-a="off" class="danger">${t("Turn notifications off on this device")}</button>`;
+  const r = $("#notif").getBoundingClientRect(); m.style.top = `${r.bottom + 6}px`; m.style.right = `${Math.max(8, innerWidth - r.right)}px`;
+  document.body.append(m);
+  const close = () => { m.remove(); document.removeEventListener("pointerdown", away, true); };
+  const away = (e) => { if (!m.contains(e.target) && e.target !== $("#notif")) close(); };
+  setTimeout(() => document.addEventListener("pointerdown", away, true), 0);
+  m.onclick = async (e) => {
+    const a = e.target.closest("button")?.dataset.a; if (!a) return; close();
+    try {
+      if (a === "test") {
+        await api("/api/push/subscribe", { subscription: sub.toJSON(), label: pushLabel() }); store.set("pushOn", "1");
+        const r = await api("/api/push/test", {});
+        toast(`${t("Test sent to {n} device(s)", { n: r.push })}${r.telegram === null ? "" : `, Telegram ${r.telegram ? "ok" : "failed"}`}`, 4000);
+      } else {
+        store.set("pushOn", "0");                        // so the page does not quietly subscribe again on the next open
+        const endpoint = sub.endpoint; await sub.unsubscribe().catch(() => {});
+        await api("/api/push/unsubscribe", { endpoint });
+        toast(t("Notifications are off on this device. Tap the bell to turn them on again."), 5000);
+      }
+    } catch (err) { toast(t("Push setup failed: {e}", { e: err.message }), 6000); }
+    refreshBell();
+  };
+}
 $("#notif").onclick = async () => {
   try {
     if (!window.isSecureContext) {
@@ -228,6 +255,7 @@ $("#notif").onclick = async () => {
     if (!("PushManager" in window)) return toast(t("This browser has no Web Push. On iPhone: Share → Add to Home Screen, then open Quarterdeck from the Home Screen."), 7000);
     const reg = await navigator.serviceWorker.register("/sw.js"); await navigator.serviceWorker.ready;
     let sub = await reg.pushManager.getSubscription();
+    if (sub) return bellMenu(sub);                     // already on: offer a test or switching it off (no silent test)
     if (!sub) {
       if ((await Notification.requestPermission()) !== "granted") return toast(t("Notifications were not allowed"));
       const { publicKey } = await api("/api/push/key");
