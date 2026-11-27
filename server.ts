@@ -5,6 +5,7 @@ import webpush from "web-push";
 import { Terminal as HeadlessTerm } from "@xterm/headless";
 import { parseMenu } from "./menu";
 import { startWatchdog } from "./lib/watchdog";
+import { liveText } from "./lib/livetext";
 import { PROTOCOL, buildId, startHealth } from "./lib/machine";
 import { join, basename } from "node:path";
 import { homedir, hostname as osHostname } from "node:os";
@@ -489,7 +490,7 @@ class Tail {
 type WsAuth = { who: string; peer?: string }; // peer = tailnet address to re-check (absent for plain local)
 // A chat stream ("tail") also carries the menu of its session (target) and knows whether its page is in front
 // (visible) — so a finished turn isn't pushed to a phone while its owner is reading that very session.
-type WsData = ({ kind: "pty"; key: string } | { kind: "tail"; tail: Tail; limit: number; timer?: Timer; target?: string; menuSig?: string; visible?: boolean }
+type WsData = ({ kind: "pty"; key: string } | { kind: "tail"; tail: Tail; limit: number; timer?: Timer; target?: string; menuSig?: string; liveSig?: string; visible?: boolean }
   | { kind: "proxy"; target: string; queue: (string | Buffer)[]; up?: WebSocket; visible?: boolean }) & WsAuth;
 const openSockets = new Set<ServerWebSocket<WsData>>();
 const RING = 400_000;
@@ -1102,6 +1103,10 @@ async function handle(req: Request, server: any): Promise<Response | undefined> 
     if (req.method !== "GET" && !sameOrigin(req)) return json({ error: "bad origin" }, 403);
     if (path === "/api/fleet") return json(fleetStatus());
     if (path === "/api/hello") return json(machineInfo());
+    if (path === "/api/screen") { // what a terminal currently shows, as text (same content the Terminal view streams) — for diagnosing menu / live-text parsing
+      const key = normKey(url.searchParams.get("target") || ""); const p = targetCommand(key) ? getPty(key) : null;
+      return p ? json({ cols: p.cols, rows: p.rows, lines: p.lines() }) : json({ error: "bad target" }, 400);
+    }
     if (path === "/api/ui") return json({ lang: LANG });
     if (path === "/api/plugins") return json(plugins.map((pl) => ({ name: pl.name, ui: pl.ui ? `/plugins/${pl.name}.js` : null, css: pl.css ? `/plugins/${pl.name}.css` : null })));
     if (path === "/api/projects") {
@@ -1252,10 +1257,17 @@ const websocket = {
         p.lastClientAt = Date.now();
         const menu = parseMenu(p.lines()); const sig = menu ? JSON.stringify(menu) : "";
         if (sig !== d.menuSig) { d.menuSig = sig; ws.send(JSON.stringify({ t: "menu", menu })); }
+        // The reply being written right now, read off the screen (the transcript only gets it when it is complete).
+        const live = menu ? null : liveText(p.lines(), p.cols); const lsig = live ? (live.partial ? "…" : "") + live.text : "";
+        if (lsig !== (d.liveSig || "")) { d.liveSig = lsig; ws.send(JSON.stringify({ t: "live", text: live?.text || "", partial: !!live?.partial })); }
       };
+      let tick = 0;
       d.timer = setInterval(() => {
-        try { const n = d.tail.readNew(); if (n.length) ws.send(JSON.stringify({ t: "events", evs: n })); sendMenu(); } catch {}
-      }, 700);
+        try {
+          if (tick++ % 2 === 0) { const n = d.tail.readNew(); if (n.length) { ws.send(JSON.stringify({ t: "events", evs: n })); } }
+          sendMenu();
+        } catch {}
+      }, 350);
     }
   },
   message(ws: ServerWebSocket<WsData>, msg: string | Buffer) {

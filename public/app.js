@@ -638,6 +638,7 @@ function openChat(opt = {}) {
   ws.onmessage = (m) => {
     const d = JSON.parse(m.data); if (ctx !== cur) return;
     if (d.t === "menu") { ctx.menuPushed = true; if (!$("#chat").hidden) renderPrompt(d.menu); return; } // menus come with the stream — no polling
+    if (d.t === "live") { renderLive(d); return; }
     if (d.t !== "events") return;
     const chat = $("#chat"); const stick = !d.initial && chat.scrollHeight - chat.scrollTop - chat.clientHeight < 120;
     if (d.initial) {
@@ -663,6 +664,19 @@ function openChat(opt = {}) {
 }
 // The server skips the "finished" push for a session whose page is in front right now.
 function sendVisible() { const ws = cur?.tailWs; if (ws?.readyState === 1) ws.send(JSON.stringify({ t: "vis", v: document.visibilityState === "visible" && !$("#chat").hidden })); }
+// The reply being written right now (read off the terminal screen by the server): shown as a preview bubble at the
+// end of the chat and replaced by the real message as soon as the transcript has it.
+function renderLive(d) {
+  const ev = $("#events"), chat = $("#chat"); let el = $("#liveText");
+  if (!d.text) { el?.remove(); return; }
+  const stick = chat.scrollHeight - chat.scrollTop - chat.clientHeight < 160;
+  if (!el) { el = document.createElement("div"); el.id = "liveText"; el.className = "ev assistant live"; el.innerHTML = `<div class="live-tag"></div><div class="live-body"></div>`; }
+  el.querySelector(".live-tag").textContent = t(d.partial ? "writing… (showing the latest part)" : "writing…");
+  el.querySelector(".live-body").innerHTML = md(d.text);
+  const act = $("#activity");
+  if (act && act.parentNode === ev) ev.insertBefore(el, act); else if (ev.lastElementChild !== el) ev.appendChild(el);
+  if (stick) chat.scrollTop = chat.scrollHeight;
+}
 function loadEarlier() {
   if (!cur?.tailWs) return;
   const first = $("#events").querySelector(".ev[data-id]");
@@ -803,6 +817,7 @@ function addEvent(e) {
     nd.textContent = t("new since {t}", { t: today ? at.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : at.toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }) });
     ev.appendChild(nd); cur.newDiv = nd;
   }
+  if (e.k === "assistant" || e.k === "tool") $("#liveText")?.remove();
   const div = document.createElement("div"); div.className = `ev ${e.k}`; if (e.id) div.dataset.id = e.id;
   if (e.k === "user" || e.k === "system") div.textContent = e.text;
   else if (e.k === "assistant") div.innerHTML = md(e.text);
