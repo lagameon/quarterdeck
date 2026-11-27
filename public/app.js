@@ -761,14 +761,15 @@ function renderActivity() {
 setInterval(renderActivity, 1000);
 
 // ───────────── live sub-agents & background shells (Chat view) ─────────────
-function markBgDone(taskId, status) {
+function markBgDone(taskId, status, ts) {
   const bg = cur?.bgs.get(taskId);
   if (bg) {
-    bg.done = true; bg.box.querySelector(".bghead").textContent = `✓ ${t("background")} · ${status || t("finished")}`;
+    bg.done = true; bg.doneAt = ts || Date.now(); bg.box.querySelector(".bghead").textContent = `✓ ${t("background")} · ${status || t("finished")}`;
     const st = bg.det.querySelector(".st"); st.textContent = `✓ ${t("background")} · ${status || t("finished")}`; st.className = "st"; pollBg(taskId);
   }
   const tool = cur?.agentIds.get(taskId); const sub = tool && cur.subs.get(tool);
-  if (sub) { sub.done = true; pollSub(tool, true); }
+  if (sub) { sub.done = true; sub.doneAt = ts || Date.now(); pollSub(tool, true); }
+  renderBgStrip();
 }
 async function pollSub(toolId, force) {
   const ctx = cur, sub = ctx?.subs.get(toolId); if (!sub || (sub.busy && !force)) return;
@@ -778,7 +779,7 @@ async function pollSub(toolId, force) {
     if (ctx !== cur || !d.found) return;
     // Async sub-agents finish with a task notification (markBgDone); the file's own status is display-only —
     // right after launch it can briefly read "done" before the first step is written.
-    if (d.status === "done" && !sub.async) sub.done = true;
+    if (d.status === "done" && !sub.async && !sub.done) { sub.done = true; sub.doneAt = Date.now(); }
     const evs = d.events || []; const lastTool = [...evs].reverse().find((x) => x.k === "tool");
     const st = sub.det.querySelector(".st");
     st.textContent = sub.done ? `✓ ${t("{n} steps", { n: d.steps })}` : `${t("running")} · ${t("{n} steps", { n: d.steps })}${lastTool ? " · " + toolName(lastTool.name) : ""}`;
@@ -798,7 +799,9 @@ async function pollBg(taskId) {
     const d = await api(`${nb(ctx.node)}/api/bgout?session=${encodeURIComponent(ctx.sessionId)}&task=${encodeURIComponent(taskId)}`);
     if (ctx !== cur) return;
     const out = bg.box.querySelector(".bgout");
-    if (!d.exists) { out.textContent = bg.done ? t("(output file no longer exists)") : t("(no output yet)"); return; }
+    // No output file two minutes after the start: the shell is gone (session restarted, files cleaned) — not "running".
+    if (!d.exists) { out.textContent = bg.done ? t("(output file no longer exists)") : t("(no output yet)"); bg.gone = !bg.done && Date.now() - bg.at > 120_000; return; }
+    bg.gone = false;
     const lines = String(d.text || "").split("\n"); out.textContent = lines.slice(-30).join("\n") || t("(empty)");
     if (!bg.done) { const last = lines.filter((l) => l.trim()).pop() || ""; const st = bg.det.querySelector(".st"); st.textContent = `${t("background")} · ${t("running")}${last ? " · " + last.slice(0, 40) : ""}`; }
     if (!bg.done) bg.box.querySelector(".bghead").textContent = `⏳ ${t("background")} · ${t("running")} · ${ago(d.mtime) === "now" ? t("updated just now") : t("updated {t} ago", { t: ago(d.mtime) })}`;
@@ -810,25 +813,53 @@ setInterval(() => {
   [...cur.bgs.entries()].filter(([, x]) => !x.done).slice(-6).forEach(([id]) => pollBg(id));
 }, 2000);
 
+// What is still running in the background, right above the message box: the tool call that started it scrolls
+// away, this does not. One chip per sub-agent / background shell; tap = jump to it in the conversation.
+// A finished one shows "✓" for 20 seconds, then leaves.
+function renderBgStrip() {
+  const el = $("#bgStrip"); if (!el) return;
+  const now = Date.now(); const items = [];
+  const shown = (x) => (x.done ? now - (x.doneAt || 0) < 20_000 : now - x.at < 24 * 3600_000);
+  if (cur?.subs && cur.kind === "job" && !$("#chat").hidden) {
+    for (const [id, x] of cur.subs) if (shown(x)) items.push({ id, x, kind: t("sub-agent") });
+    for (const [id, x] of cur.bgs) if (!x.gone && shown(x)) items.push({ id: "bg:" + id, x, kind: "shell" });
+  }
+  items.sort((a, b) => a.x.at - b.x.at);
+  const running = items.filter((i) => !i.x.done).length;
+  const html = !items.length ? "" : `<span class="bgn">${running ? t("{n} in background", { n: running }) : t("background")}</span>` + items.map((i) => {
+    const st = (i.x.det.querySelector(".st")?.textContent || "").replace(/^✓\s*/, "").replace(new RegExp("^" + t("background") + " · "), "");
+    return `<button type="button" class="bgchip ${i.x.done ? "done" : ""}" data-bg="${esc(i.id)}"><span class="bgi">${i.x.done ? "✓" : `<span class="spin"></span>`}</span><b>${esc(i.kind)}</b><span class="bgl">${esc(i.x.label || "")}</span><span class="bgs">${esc(st)}</span></button>`;
+  }).join("");
+  if (el._html !== html) { el.innerHTML = html; el._html = html; }
+  el.hidden = !items.length;
+}
+setInterval(renderBgStrip, 1000);
+$("#bgStrip").addEventListener("click", (e) => {
+  const b = e.target.closest("[data-bg]"); if (!b || !cur) return;
+  const id = b.dataset.bg; const x = id.startsWith("bg:") ? cur.bgs.get(id.slice(3)) : cur.subs.get(id); if (!x) return;
+  x.det.open = true; x.det.scrollIntoView({ block: "center", behavior: "smooth" });
+  x.det.classList.add("flash"); setTimeout(() => x.det.classList.remove("flash"), 1600);
+});
+
 function addEvent(e) {
   const ev = $("#events");
   const ts = Date.parse(e.ts);
   if (ts && ts - cur.lastTs > 20 * 60_000) { const d = document.createElement("div"); d.className = "ts-label"; d.textContent = new Date(ts).toLocaleString(); ev.appendChild(d); }
   if (ts) cur.lastTs = ts;
-  if (e.k === "bgdone") { markBgDone(e.taskId, e.status); return; }
+  if (e.k === "bgdone") { markBgDone(e.taskId, e.status, ts); return; }
   if (e.k === "result") {
     const det = cur.toolEls.get(e.toolId); if (!det) return;
     { const st = det.querySelector(".st"); st.textContent = e.isError ? t("error") : "✓"; st.className = `st ${e.isError ? "err" : ""}`; } // generic first; special states below override it
     const sub = cur.subs.get(e.toolId);
     if (sub) { // sub-agent: async ones keep running until their task notification; sync ones are done now
       if (e.agentId) cur.agentIds.set(e.agentId, e.toolId);
-      if (!/^Async agent launched/i.test(e.text || "")) sub.done = true;
+      if (!/^Async agent launched/i.test(e.text || "")) { sub.done = true; sub.doneAt = ts || Date.now(); }
       else { sub.async = true; const st = det.querySelector(".st"); st.textContent = t("sub-agent running"); st.className = "st pending"; } // launched in the background: done only when its task notification arrives
     }
     if (e.bg) { // background shell: a live output box, polled until its task notification arrives
       const box = document.createElement("div"); box.className = "bgbox";
       box.innerHTML = `<div class="bghead">⏳ ${t("background")} · ${t("running")}</div><pre class="bgout">…</pre>`;
-      det.appendChild(box); cur.bgs.set(e.bg, { det, box, done: false });
+      det.appendChild(box); cur.bgs.set(e.bg, { det, box, done: false, at: ts || Date.now(), label: det.dataset.label || "" });
       const st = det.querySelector(".st"); st.textContent = `${t("background")} · ${t("running")}`; st.className = "st pending";
       if (Date.now() - Date.parse(e.ts) < 10 * 60_000) det.open = true; // just started → show the live output
     }
@@ -859,9 +890,10 @@ function addEvent(e) {
     det.innerHTML = `<summary><span class="tn" title="${esc(e.name)}">${esc(toolName(e.name))}</span>${sumHtml(e.summary)}<span class="st pending">…</span></summary>`;
     const pre = document.createElement("pre"); pre.textContent = e.input; det.appendChild(pre);
     cur.toolEls.set(e.toolId, det); div.appendChild(det);
+    { const tmp = document.createElement("span"); tmp.innerHTML = sumHtml(e.summary); det.dataset.label = tmp.textContent.trim().slice(0, 80); }
     if (e.name === "Agent" || e.name === "Task") {
       const feed = document.createElement("div"); feed.className = "subfeed"; feed.textContent = "…"; det.appendChild(feed);
-      cur.subs.set(e.toolId, { det, feed, done: false, steps: 0 });
+      cur.subs.set(e.toolId, { det, feed, done: false, steps: 0, at: ts || Date.now(), label: det.dataset.label || "" });
       det.addEventListener("toggle", () => det.open && pollSub(e.toolId, true));
     }
   }

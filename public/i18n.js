@@ -84,7 +84,7 @@ const zh = {
   // chat
   "loading…": "加载中…", "(older messages omitted)": "（更早的消息已省略）", "Load earlier messages": "加载更早的消息", "sending…": "发送中…",
   "not confirmed yet": "尚未确认", "live connection lost — reconnecting…": "实时连接断开，正在重连…", "can't open this session's transcript (not found on that machine) — still trying; the Terminal view works": "打不开这个会话的对话记录（那台机器上没找到），仍在重试；终端视图可以正常用", "Claude is working": "Claude 正在工作",
-  "sent — waiting for Claude to pick it up…": "已发送，等 Claude 接手…", "background": "后台", "finished": "已结束", "running": "运行中",
+  "sent — waiting for Claude to pick it up…": "已发送，等 Claude 接手…", "background": "后台", "{n} in background": "后台运行 {n} 个", "finished": "已结束", "running": "运行中",
   "{n} steps": "{n} 步", "sub-agent": "子代理", "sub-agent running": "子代理运行中", "(output file no longer exists)": "（输出文件已不存在）",
   "(no output yet)": "（还没有输出）", "(empty)": "（空）", "(no output)": "（无输出）", "error": "出错", "updated {t} ago": "{t} 前更新", "updated just now": "刚刚更新",
   "new since {t}": "{t} 之后的新消息",

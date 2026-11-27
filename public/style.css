@@ -406,3 +406,20 @@ body.stale .brand::after { content: " ⟳"; color: var(--dim); font-weight: 400;
 .ev.assistant.live > :last-child::after { content: "▍"; color: var(--accent2); animation: qd-blink 1s steps(2) infinite; margin-left: 2px; }
 .ev.assistant.live:empty::after { content: "▍"; color: var(--accent2); animation: qd-blink 1s steps(2) infinite; }
 @keyframes qd-blink { 50% { opacity: 0; } }
+
+/* background strip: what is still running, right above the message box */
+#bgStrip { flex: none; display: flex; align-items: center; gap: 6px; padding: 6px 8px; border-top: 1px solid var(--line); background: var(--panel); overflow-x: auto; scrollbar-width: none; }
+#bgStrip[hidden] { display: none; }
+#bgStrip::-webkit-scrollbar { display: none; }
+#bgStrip .bgn { flex: none; font-size: 12px; color: var(--dim); margin-right: 2px; }
+.bgchip { flex: none; display: inline-flex; align-items: center; gap: 6px; max-width: min(78vw, 420px); padding: 4px 10px; border: 1px solid var(--line); border-radius: 999px; background: var(--panel2); color: inherit; font-size: 12px; line-height: 1.5; cursor: pointer; }
+.bgchip b { flex: none; font-weight: 600; color: var(--accent2); }
+.bgchip .bgl { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.bgchip .bgs { flex: none; max-width: 40%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--dim); }
+.bgchip.done { opacity: .6; }
+.bgchip.done b { color: inherit; }
+.bgchip .bgi { flex: none; display: inline-flex; width: 12px; justify-content: center; }
+.bgchip .spin { width: 9px; height: 9px; border: 2px solid var(--accent2); border-right-color: transparent; border-radius: 50%; animation: bgspin 1s linear infinite; }
+@keyframes bgspin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .bgchip .spin { animation: none; } }
+details.tool.flash { outline: 2px solid var(--accent2); outline-offset: 2px; border-radius: 6px; }
