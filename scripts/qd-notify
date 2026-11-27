@@ -1,0 +1,19 @@
+#!/bin/sh
+# qd-notify — tell Quarterdeck that an agent in this terminal needs you or has finished.
+# Call it from the agent's own hook (examples in README, "Other agents"). It posts to the Quarterdeck on THIS machine
+# (loopback); Quarterdeck sends the push notification and marks the tmux session. It never blocks the agent:
+# two-second limit, always exits 0.
+#
+#   qd-notify <agent> <needs|done|info> [message]
+#   qd-notify codex            # event and message taken from what the hook passed (JSON on stdin or as last argument)
+#
+# Environment: QUARTERDECK_PORT (default 7690).
+agent="${1:-agent}"; event="${2:-}"; message="${3:-}"; raw=""
+case "$event" in "{"*) raw="$event"; event="" ;; esac          # Codex: the JSON is the argument after the agent name
+case "$message" in "{"*) raw="$message"; message="" ;; esac
+if [ -z "$raw" ] && [ ! -t 0 ]; then raw="$(head -c 20000 2>/dev/null || true)"; fi   # Claude Code / Gemini CLI: JSON on stdin
+tmux_name=""; [ -n "${TMUX:-}" ] && tmux_name="$(tmux display-message -p '#S' 2>/dev/null || true)"
+curl -s -m 2 -o /dev/null "http://127.0.0.1:${QUARTERDECK_PORT:-7690}/api/notify" \
+  --data-urlencode "agent=$agent" --data-urlencode "event=$event" --data-urlencode "message=$message" \
+  --data-urlencode "tmux=$tmux_name" --data-urlencode "cwd=$PWD" --data-urlencode "raw=$raw" 2>/dev/null || true
+exit 0

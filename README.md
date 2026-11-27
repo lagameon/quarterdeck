@@ -28,7 +28,7 @@ Most remotes for coding agents wrap the agent in their own launcher and sync thr
 - **Several Claude accounts side by side**, each with its own login and sessions.
 - **Small enough to read.** About three thousand lines, no build step, and a [security model](#security-model) written down. Private features go in [plug-ins](#plug-ins), not forks.
 
-What it is not: it drives Claude Code only (no other agents), and it has no native app. A longer comparison is on the [project page](https://lagameon.github.io/quarterdeck/compare.html).
+What it is not: the full experience (chat view, buttons, status) is for Claude Code; [other agents](#other-agents) get the terminal and notifications. And it has no native app. A longer comparison is on the [project page](https://lagameon.github.io/quarterdeck/compare.html).
 
 > Not affiliated with Anthropic. Quarterdeck reads Claude Code's local files and drives its CLI; those are not stable public interfaces (see [Limitations](#limitations)).
 
@@ -51,6 +51,7 @@ What it is not: it drives Claude Code only (no other agents), and it has no nati
 - **Languages** — English and Chinese (`lang` in the config; each device can switch for itself). Translations are one file, `public/i18n.js`.
 - **Plug-ins** — private features (your own routes, a dashboard block, pages, session buttons) live outside the repo and load from the config, so you never need a fork. See [Plug-ins](#plug-ins).
 - **Stays up** — every `claude` / `git` / `tailscale` call runs without blocking and with a timeout; if the server's main thread is ever stuck for 45 s it exits and the service manager starts a fresh one.
+- **Other agents** — Codex, OpenCode, Gemini CLI or anything else running in a tmux session: watch and drive it in the Terminal view, and get a push when it finishes or needs you, reported by the agent's own hook. See [Other agents](#other-agents).
 - **Keyboard** — ⌘K session switcher, Alt+1–4 Chat / Terminal / Split / Changes, Alt+N new session, `/` focus the composer.
 
 ## Requirements
@@ -149,6 +150,29 @@ Run Quarterdeck on every machine that runs Claude Code. Pick one, always-on mach
 **Updating a node:** `scripts/deploy-node.sh <ssh-host> [remote-dir] [port]` copies this checkout to the node (default `~/quarterdeck`), runs `bun install`, restarts its service (launchd `com.quarterdeck.server` or systemd `--user` unit `quarterdeck`; override with `QD_SERVICE`) and then asks the node which build it runs. It exits non-zero unless the node answers with the same build id as `bun server.ts --build-id` here.
 
 Linux nodes: see `quarterdeck.service.example` (a systemd user service; run `loginctl enable-linger $USER` so it starts without a login). Keep its `KillMode=process`: with systemd's default, restarting or updating Quarterdeck also kills the Claude daemon it may have started, and with it every background session on that machine.
+
+## Other agents
+
+Quarterdeck's chat view, buttons and status are built for Claude Code. Any other terminal agent works at a simpler level:
+
+| | Claude Code | Any agent in tmux (Codex, OpenCode, Gemini CLI, an interactive `claude` …) |
+|---|---|---|
+| See and drive the session | Chat view + real terminal | Real terminal (attach the tmux session) |
+| "Needs you" / "finished" on the dashboard, push notification | Automatic | When the agent's hook calls `scripts/qd-notify` |
+| Questions as buttons, live typing, changes, usage | Yes | No |
+
+Run the agent inside tmux (`tmux new -s work`, then start it) — the session appears under *tmux* on the dashboard of that machine. A quiet terminal does not tell Quarterdeck that an agent is done, so let the agent say so: point its hook at `scripts/qd-notify`.
+
+```sh
+qd-notify <agent-name> <needs|done> [message]     # e.g.  qd-notify opencode needs "Run npm install?"
+qd-notify <agent-name>                            # event and message are read from what the hook passes (JSON on stdin or as an argument)
+```
+
+It posts to the Quarterdeck on the same machine (loopback only, 2-second limit, never fails the agent); the session moves to *Needs you* until you answer in its terminal, and your devices get the push.
+
+- **Codex** (tested with codex-cli 0.159) — in `~/.codex/config.toml`: `notify = ["/path/to/quarterdeck/scripts/qd-notify", "codex"]`. Fires when a turn completes, with the last message as the text.
+- **Claude Code in a terminal** (not a background session) — hooks in `~/.claude/settings.json`, events `Stop` and `Notification`, command `/path/to/quarterdeck/scripts/qd-notify claude`. The hook's JSON on stdin decides between *finished* and *needs you*. (Checked with the documented JSON shape, not yet with a live hook.)
+- **OpenCode, Gemini CLI and others** — anything that can run a command on "turn finished" or "permission asked" works with the two-argument form above. Not tested here yet; see the agent's own hook or plug-in documentation.
 
 ## Plug-ins
 

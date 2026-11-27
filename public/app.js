@@ -176,7 +176,7 @@ async function poll() {
     if (v === "list") { renderDash(); Promise.all([refreshPlugins(), loadStats()]).then(() => route().view === "list" && renderDash()); }
     else if (plug.pages[v]) { await refreshPlugins(); renderPage(v); } else refreshMeta();
     renderSide();
-    const blocked = data.jobs.filter(isBlocked).length;
+    const blocked = data.jobs.filter(isBlocked).length + data.tmux.filter(tmuxNeeds).length;
     document.title = blocked ? `(${blocked}) Quarterdeck` : "Quarterdeck";
     const off = (fleet.nodes || []).filter((n) => !n.online).length; $("#home").title = off ? `${off} machine(s) offline` : "";
     const sw = $("#swBtn"); sw.textContent = blocked ? `⚑ ${blocked}` : "☰"; sw.classList.toggle("warn", !!blocked);
@@ -254,13 +254,15 @@ $("#notif").onclick = async () => {
 function allItems() {
   const order = { blocked: 0, working: 1 };
   const jobs = [...data.jobs].sort((a, b) => (order[jobState(a)] ?? 2) - (order[jobState(b)] ?? 2));
-  return [
+  const flat = [
     ...jobs.map((j) => ({ href: hrefOf("job", j.id, j.node), node: j.node, cwd: j.cwd, group: jobState(j) === "blocked" ? "Needs you" : jobState(j) === "working" ? "Running" : "Finished", cls: jobState(j), name: j.name, sub: isBlocked(j) ? needsText(j.needs) || j.detail : j.detail, age: j.updatedAt, key: `${j.name} ${j.id} ${j.detail} ${j.cwd} ${hostLabel(j.node)}` })),
     ...data.transcripts.map((t) => ({ href: hrefOf("t", t.sessionId, t.node), node: t.node, group: "Interactive", cls: "", name: t.title, sub: t.lastPrompt, age: t.mtime, key: `${t.title} ${t.lastPrompt} ${t.cwd} ${hostLabel(t.node)}` })),
-    ...data.tmux.map((s) => ({ href: hrefOf("tmux", s.name, s.node), node: s.node, group: "tmux", cls: "", name: `tmux: ${s.name}`, sub: `${s.command} · ${short(s.path)}`, age: s.activity, key: `tmux ${s.name} ${s.path}` })),
+    ...data.tmux.map((s) => ({ href: hrefOf("tmux", s.name, s.node), node: s.node, group: tmuxNeeds(s) ? "Needs you" : "tmux", cls: tmuxNeeds(s) ? "blocked" : "", name: `${s.agent ? s.agent.name + " · " : "tmux: "}${s.name}`, sub: s.agent?.message || `${s.command} · ${short(s.path)}`, age: s.agent?.at || s.activity, key: `tmux ${s.name} ${s.path} ${s.agent?.name || ""}` })),
     { href: "#/shell", group: "tmux", cls: "", name: "shell (tmux quarterdeck)", sub: t("persistent shell"), age: "", key: "shell Quarterdeck" },
     ...(fleet.nodes || []).filter((n) => n.online).map((n) => ({ href: `#/shell/main/${n.id}`, node: n.id, group: "tmux", cls: "", name: t("shell on {m}", { m: n.label }), sub: t("persistent shell (tmux)"), age: "", key: `shell ${n.label}` })),
   ];
+  const rank = { "Needs you": 0, Running: 1 };                 // keeps every group together, "Needs you" first
+  return flat.map((x, i) => [x, i]).sort((a, b) => (rank[a[0].group] ?? 2) - (rank[b[0].group] ?? 2) || a[1] - b[1]).map((x) => x[0]);
 }
 function itemHtml(it, extra = "") {
   return `<a class="si ${it.cls} ${extra}" href="${it.href}"><div class="n"><b>${esc(it.name)}</b>${multiHost() && it.node !== undefined ? `<span class="hn">${esc(hostLabel(it.node))}</span>` : ""}<i>${ago(it.age)}</i></div><div class="d">${esc(it.sub)}</div></a>`;
@@ -328,7 +330,10 @@ function jobCard(j, opt = {}) {
     ${detail}${needs}${res}<div class="l2 lm">${opt.inGroup ? "" : hostChip(j.node)}${acctBadge(j.profile, j.node)}${chip}${opt.inGroup ? "" : esc(short(j.cwd)) + " · "}${esc(j.id)}</div></a>`;
 }
 const trCard = (t) => `<a class="card" href="${hrefOf("t", t.sessionId, t.node)}"><div class="l1"><span class="name">${esc(t.title)}</span><span class="age">${ago(t.mtime)}</span></div><div class="l2">${esc(t.lastPrompt)}</div><div class="l2 lm">${hostChip(t.node)}${esc(short(t.cwd))}</div></a>`;
-const tmuxCard = (s) => `<a class="card" href="${hrefOf("tmux", s.name, s.node)}"><div class="l1"><span class="name">tmux: ${esc(s.name)}</span>${s.attached ? `<span class="chip live">${t("{n} attached", { n: s.attached })}</span>` : ""}<span class="age">${ago(s.activity)}</span></div><div class="l2 lm">${hostChip(s.node)}${esc(s.command)} · ${esc(short(s.path))} · ${t("{n} win", { n: s.windows })}</div></a>`;
+// A tmux session whose agent reported through its hook (scripts/qd-notify): "needs you" / "finished".
+const tmuxNeeds = (s) => s.agent?.event === "needs";
+const agentChip = (s) => (s.agent ? `<span class="chip ${s.agent.event === "needs" ? "blocked" : s.agent.event === "done" ? "done" : ""}" title="${esc(s.agent.message || "")}">${esc(s.agent.name)}${s.agent.event === "needs" ? " · " + t("needs you") : s.agent.event === "done" ? " · " + t("done") : ""}</span>` : "");
+const tmuxCard = (s) => `<a class="card ${tmuxNeeds(s) ? "blocked" : ""}" href="${hrefOf("tmux", s.name, s.node)}"><div class="l1"><span class="name">tmux: ${esc(s.name)}</span>${agentChip(s)}${s.attached ? `<span class="chip live">${t("{n} attached", { n: s.attached })}</span>` : ""}<span class="age">${ago(s.agent?.at || s.activity)}</span></div>${s.agent?.message ? `<div class="${tmuxNeeds(s) ? "needs" : "l2"}">${tmuxNeeds(s) ? "⚑ " : ""}${esc(s.agent.message.slice(0, 220))}</div>` : ""}<div class="l2 lm">${hostChip(s.node)}${esc(s.command)} · ${esc(short(s.path))} · ${t("{n} win", { n: s.windows })}</div></a>`;
 function section(title, items, render, opt = {}) {
   let list = items, more = "";
   if (opt.limit && !showAll[opt.key] && items.length > opt.limit) { list = items.slice(0, opt.limit); more = `<button class="more" data-more="${opt.key}">${t("show {n} more", { n: items.length - opt.limit })}</button>`; }
@@ -495,7 +500,7 @@ function renderDash() {
   const hint = wide() && store.get("hintHidden") !== "1" ? `<div class="hint"><button class="hx" title="${t("Hide this hint")}" aria-label="${t("Hide hint")}">×</button>${t("Open any session to get <b>Chat</b> · <b>Terminal</b> · <b>Split</b> (both side by side) · <b>Changes</b> (this session's diffs).")}
     <kbd>⌘K</kbd> ${t("switch session")} · <kbd>Alt+1–4</kbd> ${t("switch view")} · <kbd>Alt+N</kbd> ${t("new")} · <kbd>/</kbd> ${t("type a message")}</div>` : "";
   // What needs you and what is running: left column on wide screens, the very top on phones.
-  const top = section(t("Needs you"), blocked, jobCard, { empty: t("nothing waiting on you") }) + section(t("Running"), working, jobCard);
+  const top = section(t("Needs you"), [...blocked, ...data.tmux.filter(tmuxNeeds)], (x) => (x.kind === "tmux" ? tmuxCard(x) : jobCard(x)), { empty: t("nothing waiting on you") }) + section(t("Running"), working, jobCard);
   const others = finishedSection(rest) +
     section(t("Interactive sessions (resume)"), data.transcripts, trCard, { limit: 8, key: "tr" }) +
     section("tmux", data.tmux, tmuxCard, { empty: t("no tmux sessions") }) +

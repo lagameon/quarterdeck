@@ -690,6 +690,7 @@ async function actSend(body: any) {
   const key = normKey(String(body.target || "")); const text = String(body.text ?? "");
   const fresh = !ptys.get(key) || ptys.get(key)!.exited;
   const p = getPty(key); if (!p) return json({ error: "bad target" }, 400);
+  agentCleared(key);
   if (fresh) await waitQuiet(p, 1500, 12000);
   if (text) p.write(`\x1b[200~${text}\x1b[201~`);
   if (body.enter !== false) { await Bun.sleep(text ? 200 : 0); p.write("\r"); }
@@ -974,6 +975,50 @@ function healthAlerts() {
 }
 setInterval(healthAlerts, 5 * 60_000); setTimeout(healthAlerts, 60_000); // after the first node polls and health samples
 
+// ───────────────────────────── other agents (Codex, OpenCode, Gemini CLI, an interactive claude …) ─────────────────────────────
+// Any agent running in a tmux session can be watched and driven in the Terminal view. What the terminal cannot tell
+// us is WHEN it needs you or has finished — a quiet screen is not "done" (spinners, long tools). The agents know:
+// each has hooks. `scripts/qd-notify` is called from such a hook and posts here; that becomes a push notification
+// and a state on the tmux session. Local callers only; nothing is executed, the text is only shown.
+type AgentEvent = { id: string; at: number; agent: string; event: "needs" | "done" | "info"; message: string; tmux: string; cwd: string; cleared?: boolean };
+const agentEvents: AgentEvent[] = [];
+function agentNotify(f: Record<string, unknown>): AgentEvent | null {
+  let raw: any = {}; try { raw = typeof f.raw === "string" && f.raw.trim().startsWith("{") ? JSON.parse(f.raw) : {}; } catch {}
+  const str = (v: unknown, n: number) => String(v ?? "").replace(/[\x00-\x08\x0b-\x1f]/g, " ").trim().slice(0, n);
+  // What the hook itself said (Claude Code passes JSON on stdin, Codex appends a JSON argument) fills in what the caller left out.
+  let event = str(f.event, 12).toLowerCase(); let message = str(f.message, 500);
+  const hook = str(raw.hook_event_name || raw.type, 40);
+  if (!["needs", "done", "info"].includes(event)) event = /Notification|PermissionRequest|permission|approval/i.test(hook) ? "needs" : /Stop|complete|idle/i.test(hook) ? "done" : "info";
+  if (!message) message = str(raw.message || raw["last-assistant-message"] || raw.last_assistant_message || "", 500);
+  const e: AgentEvent = { id: Math.random().toString(36).slice(2, 10), at: Date.now(), agent: str(f.agent, 24) || "agent", event: event as AgentEvent["event"],
+    message, tmux: /^[\w.@%+-]{1,64}$/.test(str(f.tmux, 64)) ? str(f.tmux, 64) : "", cwd: str(f.cwd || raw.cwd, 300) };
+  const dup = agentEvents.find((x) => Date.now() - x.at < 5000 && x.tmux === e.tmux && x.event === e.event && x.message === e.message && x.agent === e.agent);
+  if (dup || agentEvents.filter((x) => Date.now() - x.at < 60_000).length >= 30) return null;   // a hook gone wild must not flood the phone
+  for (const x of agentEvents) if (x.tmux === e.tmux && x.agent === e.agent) x.cleared = true;      // only the latest state of a session counts
+  agentEvents.push(e); if (agentEvents.length > 60) agentEvents.shift();
+  console.log(`[agent] ${e.agent} ${e.event}${e.tmux ? " tmux:" + e.tmux : ""}`);
+  return e;
+}
+// You answered in that terminal → it no longer "needs you".
+function agentCleared(key: string) { if (key.startsWith("tmux:")) for (const x of agentEvents) if (x.tmux === key.slice(5) && x.event === "needs") x.cleared = true; }
+const agentOf = (tmux: string) => { const e = [...agentEvents].reverse().find((x) => x.tmux === tmux && Date.now() - x.at < 24 * 3600_000); return e ? { name: e.agent, event: e.cleared && e.event === "needs" ? "info" : e.event, at: e.at, message: e.message } : undefined; };
+const seenAgentEvents = new Set<string>(); let agentBaseline = false;
+function pushAgentEvents() {
+  const all: { e: AgentEvent; node: NodeConf | null }[] = agentEvents.map((e) => ({ e, node: null }));
+  for (const n of FLEET.nodes) { const ns = nodeState.get(n.id); if (ns?.online && Array.isArray(ns.data?.agentEvents)) for (const e of ns.data.agentEvents) all.push({ e, node: n }); }
+  for (const { e, node } of all) {
+    const key = `${node?.id || ""}:${e.id}`; if (seenAgentEvents.has(key)) continue; seenAgentEvents.add(key);
+    if (!agentBaseline || Date.now() - e.at > 120_000 || e.event === "info") continue;       // what was there at startup, or is old, is not news
+    if (e.event === "done" && notifyConf().notifyDone === false) continue;
+    const hide = !!(notifyConf() as any).hideBody; const where = e.tmux || basename(e.cwd || "") || "terminal"; const at = node ? `[${node.label}] ` : "";
+    sendAll({ title: hide ? (e.event === "needs" ? tr("⚑ A session needs you") : tr("✓ A session finished")) : `${e.event === "needs" ? "⚑" : "✓"} ${at}${e.agent} · ${where}`,
+      body: hide ? "" : (e.message || (e.event === "needs" ? tr("needs your input") : tr("finished"))).slice(0, 300),
+      url: e.tmux ? `/#/tmux/${encodeURIComponent(e.tmux)}${node ? "/" + node.id : ""}` : "/", tag: `agent:${key}` });
+  }
+  agentBaseline = true; if (seenAgentEvents.size > 2000) seenAgentEvents.clear();
+}
+setInterval(pushAgentEvents, 2000);
+
 function beingWatched(j: Job, node: NodeConf | null): boolean {
   for (const ws of openSockets) {
     const d = ws.data; if (d.kind === "pty" || !d.visible) continue;
@@ -1124,9 +1169,9 @@ async function handle(req: Request, server: any): Promise<Response | undefined> 
       const jobs = listJobs();
       const jobSids = new Set(jobs.map((j) => j.sessionId));
       const transcripts = listTranscripts(Number(url.searchParams.get("limit") || 40), jobSids);
-      const tmux = await listTmux();
+      const tmux = (await listTmux()).map((x) => ({ ...x, agent: agentOf(x.name) }));
       const cwds = [...new Set([...jobs.map((j) => j.cwd), ...transcripts.map((t) => t.cwd)].filter(Boolean))].slice(0, 25);
-      return json({ jobs, transcripts, tmux, cwds, ptys: [...ptys.keys()], accounts: await accountsStatus(), machine: machineInfo(), push: { devices: subs.length, lost: pushLost }, who: auth.who, now: Date.now() });
+      return json({ jobs, transcripts, tmux, cwds, ptys: [...ptys.keys()], accounts: await accountsStatus(), machine: machineInfo(), push: { devices: subs.length, lost: pushLost }, agentEvents: agentEvents.slice(-30), who: auth.who, now: Date.now() });
     }
     if (path === "/api/job") {
       const id = url.searchParams.get("id") || "";
@@ -1170,6 +1215,14 @@ async function handle(req: Request, server: any): Promise<Response | undefined> 
       return f ? json(transcriptInfo(f, basename(join(f, "..")))) : json({ error: "not found" }, 404);
     }
     let body: any = null;
+    if (req.method === "POST" && path === "/api/notify") {
+      if (auth.who !== "local") return json({ error: "local callers only (run qd-notify on the machine itself)" }, 403);
+      const ct = req.headers.get("content-type") || ""; const text = await req.text();
+      let f: Record<string, unknown> = {};
+      try { f = ct.includes("json") ? JSON.parse(text) : Object.fromEntries(new URLSearchParams(text)); } catch {}
+      const e = agentNotify(f);
+      return json({ ok: !!e, id: e?.id });
+    }
     if (req.method === "POST") {
       body = await req.json().catch(() => ({}));
       const ref = [body.id, body.target, body.sessionId].filter((x) => typeof x === "string" && /^[\w:.\-]{1,80}$/.test(x)).join(" ");
@@ -1293,7 +1346,7 @@ const websocket = {
     const p = ptys.get(d.key); if (!p) return;
     let m: any; try { m = JSON.parse(String(msg)); } catch { return; }
     p.lastClientAt = Date.now();
-    if (m.t === "in" && typeof m.d === "string") { if (opensOverview(d.key, p, m.d)) { try { ws.send(JSON.stringify({ t: "blocked", why: "overview" })); } catch {} } else p.write(m.d); }
+    if (m.t === "in" && typeof m.d === "string") { agentCleared(d.key); if (opensOverview(d.key, p, m.d)) { try { ws.send(JSON.stringify({ t: "blocked", why: "overview" })); } catch {} } else p.write(m.d); }
     else if (m.t === "resize") p.resize(m.cols, m.rows);
     else if (m.t === "redraw") p.nudge();
   },
