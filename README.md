@@ -171,8 +171,18 @@ qd-notify <agent-name>                            # event and message are read f
 It posts to the Quarterdeck on the same machine (loopback only, 2-second limit, never fails the agent); the session moves to *Needs you* until you answer in its terminal, and your devices get the push.
 
 - **Codex** (tested with codex-cli 0.159) — in `~/.codex/config.toml`: `notify = ["/path/to/quarterdeck/scripts/qd-notify", "codex"]`. Fires when a turn completes, with the last message as the text.
-- **Claude Code in a terminal** (not a background session) — hooks in `~/.claude/settings.json`, events `Stop` and `Notification`, command `/path/to/quarterdeck/scripts/qd-notify claude`. The hook's JSON on stdin decides between *finished* and *needs you*. (Checked with the documented JSON shape, not yet with a live hook.)
-- **OpenCode, Gemini CLI and others** — anything that can run a command on "turn finished" or "permission asked" works with the two-argument form above. Not tested here yet; see the agent's own hook or plug-in documentation.
+- **OpenCode** (tested with 1.19) — copy `scripts/hooks/opencode.js` to `~/.config/opencode/plugins/` and put `qd-notify` on your PATH (or set `QD_NOTIFY`). Reports *finished* when a session goes idle and *needs you* when it asks for permission, with the command it wants to run.
+- **Claude Code in a terminal** (not a background session; tested with 2.1) — in `~/.claude/settings.json`:
+
+  ```json
+  {"hooks": {
+    "Stop":         [{"hooks": [{"type": "command", "command": "/path/to/quarterdeck/scripts/qd-notify claude"}]}],
+    "Notification": [{"matcher": "permission_prompt", "hooks": [{"type": "command", "command": "/path/to/quarterdeck/scripts/qd-notify claude"}]}]
+  }}
+  ```
+
+  Keep the `permission_prompt` matcher: without it Claude Code also fires an "is waiting for your input" notification a minute after every finished turn, which would show up as a second, wrong *needs you*.
+- **Gemini CLI and others** — anything that can run a command on "turn finished" or "permission asked" works with the two-argument form above. Not tested here.
 
 ## Plug-ins
 
