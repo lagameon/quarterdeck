@@ -51,7 +51,7 @@ What it is not: the full experience (chat view, buttons, status) is for Claude C
 - **Languages** — English and Chinese (`lang` in the config; each device can switch for itself). Translations are one file, `public/i18n.js`.
 - **Plug-ins** — private features (your own routes, a dashboard block, pages, session buttons) live outside the repo and load from the config, so you never need a fork. See [Plug-ins](#plug-ins).
 - **Stays up** — every `claude` / `git` / `tailscale` call runs without blocking and with a timeout; if the server's main thread is ever stuck for 45 s it exits and the service manager starts a fresh one.
-- **Other agents** — Codex, OpenCode, Gemini CLI or anything else running in a tmux session: watch and drive it in the Terminal view, and get a push when it finishes or needs you, reported by the agent's own hook. See [Other agents](#other-agents).
+- **Other agents** — Codex, OpenCode, Antigravity CLI or anything else running in a tmux session: watch and drive it in the Terminal view, and get a push when it finishes or needs you, reported by the agent's own hook. See [Other agents](#other-agents).
 - **Keyboard** — ⌘K session switcher, Alt+1–4 Chat / Terminal / Split / Changes, Alt+N new session, `/` focus the composer.
 
 ## Requirements
@@ -155,7 +155,7 @@ Linux nodes: see `quarterdeck.service.example` (a systemd user service; run `log
 
 Quarterdeck's chat view, buttons and status are built for Claude Code. Any other terminal agent works at a simpler level:
 
-| | Claude Code | Any agent in tmux (Codex, OpenCode, Gemini CLI, an interactive `claude` …) |
+| | Claude Code | Any agent in tmux (Codex, OpenCode, Antigravity CLI, an interactive `claude` …) |
 |---|---|---|
 | See and drive the session | Chat view + real terminal | Real terminal (attach the tmux session) |
 | "Needs you" / "finished" on the dashboard, push notification | Automatic | When the agent's hook calls `scripts/qd-notify` |
@@ -182,7 +182,14 @@ It posts to the Quarterdeck on the same machine (loopback only, 2-second limit, 
   ```
 
   Keep the `permission_prompt` matcher: without it Claude Code also fires an "is waiting for your input" notification a minute after every finished turn, which would show up as a second, wrong *needs you*.
-- **Gemini CLI and others** — anything that can run a command on "turn finished" or "permission asked" works with the two-argument form above. Not tested here.
+- **Antigravity CLI** (`agy`, the successor of Gemini CLI; tested with 1.5) — in `~/.gemini/config/hooks.json` (every project) or `<project>/.agents/hooks.json`:
+
+  ```json
+  {"quarterdeck": {"Stop": [{"type": "command", "command": "/path/to/quarterdeck/scripts/qd-notify antigravity done", "timeout": 5}]}}
+  ```
+
+  Reports *finished* after each turn. Antigravity has no hook for "waiting for your approval", so there is no *needs you* for it.
+- **Others** — anything that can run a command on "turn finished" or "permission asked" works with the two-argument form above.
 
 ## Plug-ins
 

@@ -11,7 +11,7 @@
 agent="${1:-agent}"; event="${2:-}"; message="${3:-}"; raw=""
 case "$event" in "{"*) raw="$event"; event="" ;; esac          # Codex: the JSON is the argument after the agent name
 case "$message" in "{"*) raw="$message"; message="" ;; esac
-if [ -z "$raw" ] && [ ! -t 0 ]; then raw="$(head -c 20000 2>/dev/null || true)"; fi   # Claude Code / Gemini CLI: JSON on stdin
+if [ -z "$raw" ] && [ ! -t 0 ]; then raw="$(head -c 20000 2>/dev/null || true)"; fi   # Claude Code / Antigravity CLI: JSON on stdin
 tmux_name=""; [ -n "${TMUX:-}" ] && tmux_name="$(tmux display-message -p '#S' 2>/dev/null || true)"
 curl -s -m 2 -o /dev/null "http://127.0.0.1:${QUARTERDECK_PORT:-7690}/api/notify" \
   --data-urlencode "agent=$agent" --data-urlencode "event=$event" --data-urlencode "message=$message" \
