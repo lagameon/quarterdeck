@@ -204,7 +204,7 @@ async function pushState() {
   const reg = await navigator.serviceWorker.getRegistration(); const sub = await reg?.pushManager.getSubscription();
   return sub ? "on" : "off";
 }
-async function refreshBell() { const st = await pushState().catch(() => "off"); $("#notif").textContent = st === "on" ? "🔔" : "🔕"; $("#notif").title = st === "on" ? t("Notifications are on for this device — tap for a test or to turn them off") : t("Enable push notifications on this device"); }
+async function refreshBell() { const st = await pushState().catch(() => "off"); $("#notif").textContent = st === "on" ? "🔔" : "🔕"; $("#notif").title = st === "on" ? t("Notifications are on for this device — tap to turn them off") : t("Notifications are off for this device — tap to turn them on"); }
 const pushLabel = () => `${/iPhone/.test(navigator.userAgent) ? "iPhone" : /iPad/.test(navigator.userAgent) ? "iPad" : /Mac/.test(navigator.userAgent) ? "Mac" : "device"} · ${navigator.userAgent.match(/(Chrome|Safari|Firefox|Edg)\/[\d.]+/)?.[0] || ""}`;
 // A device that had push switched on keeps it: the subscription is re-created if the browser dropped it (expired,
 // app re-installed) and re-announced to the server on every open (the server may have forgotten it).
@@ -219,32 +219,13 @@ async function ensurePush() {
     refreshBell();
   } catch (e) { console.warn("push:", e); }
 }
-// Bell while push is on: a small menu under it — send a test, or switch push off on this device.
-function bellMenu(sub) {
-  const old = $("#bellMenu"); if (old) { old.remove(); return; }
-  const m = document.createElement("div"); m.id = "bellMenu"; m.className = "popmenu";
-  m.innerHTML = `<button data-a="test">${t("Send a test notification")}</button><button data-a="off" class="danger">${t("Turn notifications off on this device")}</button>`;
-  const r = $("#notif").getBoundingClientRect(); m.style.top = `${r.bottom + 6}px`; m.style.right = `${Math.max(8, innerWidth - r.right)}px`;
-  document.body.append(m);
-  const close = () => { m.remove(); document.removeEventListener("pointerdown", away, true); };
-  const away = (e) => { if (!m.contains(e.target) && e.target !== $("#notif")) close(); };
-  setTimeout(() => document.addEventListener("pointerdown", away, true), 0);
-  m.onclick = async (e) => {
-    const a = e.target.closest("button")?.dataset.a; if (!a) return; close();
-    try {
-      if (a === "test") {
-        await api("/api/push/subscribe", { subscription: sub.toJSON(), label: pushLabel() }); store.set("pushOn", "1");
-        const r = await api("/api/push/test", {});
-        toast(`${t("Test sent to {n} device(s)", { n: r.push })}${r.telegram === null ? "" : `, Telegram ${r.telegram ? "ok" : "failed"}`}`, 4000);
-      } else {
-        store.set("pushOn", "0");                        // so the page does not quietly subscribe again on the next open
-        const endpoint = sub.endpoint; await sub.unsubscribe().catch(() => {});
-        await api("/api/push/unsubscribe", { endpoint });
-        toast(t("Notifications are off on this device. Tap the bell to turn them on again."), 5000);
-      }
-    } catch (err) { toast(t("Push setup failed: {e}", { e: err.message }), 6000); }
-    refreshBell();
-  };
+// Bell = a switch for this device: on → one tap turns notifications off; off → one tap turns them on (and sends one
+// test so you see it works). Off stays off: the page does not subscribe again on its own.
+async function pushOff(sub) {
+  store.set("pushOn", "0");
+  const endpoint = sub.endpoint; await sub.unsubscribe().catch(() => {});
+  await api("/api/push/unsubscribe", { endpoint });
+  toast(t("Notifications are off on this device. Tap the bell to turn them on again."), 5000);
 }
 $("#notif").onclick = async () => {
   try {
@@ -255,7 +236,7 @@ $("#notif").onclick = async () => {
     if (!("PushManager" in window)) return toast(t("This browser has no Web Push. On iPhone: Share → Add to Home Screen, then open Quarterdeck from the Home Screen."), 7000);
     const reg = await navigator.serviceWorker.register("/sw.js"); await navigator.serviceWorker.ready;
     let sub = await reg.pushManager.getSubscription();
-    if (sub) return bellMenu(sub);                     // already on: offer a test or switching it off (no silent test)
+    if (sub) { await pushOff(sub); return refreshBell(); }
     if (!sub) {
       if ((await Notification.requestPermission()) !== "granted") return toast(t("Notifications were not allowed"));
       const { publicKey } = await api("/api/push/key");
@@ -461,10 +442,15 @@ function machinesBlock() {
     ...(fleet.nodes || []).map((n) => ({ id: n.id, label: n.label, m: n.data?.machine, accounts: n.data?.accounts || [], online: n.online }))];
   const warns = [], rows = [];
   if (data.push?.lost) warns.push(t("Notifications reach no device since {d} ({n} not delivered): the phone's subscription ended. Open Quarterdeck on the phone and tap 🔔.", { d: esc(new Date(data.push.lost.at).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })), n: data.push.lost.missed }));
+  // Claude Code: the newest version among the machines that are online; an older one is flagged and can be updated here.
+  const vnum = (v) => String(v || "").split(".").map((n) => parseInt(n, 10) || 0);
+  const vcmp = (a, b) => { const x = vnum(a), y = vnum(b); for (let i = 0; i < 3; i++) if ((x[i] || 0) !== (y[i] || 0)) return (x[i] || 0) - (y[i] || 0); return 0; };
+  const newest = ms.filter((x) => x.online && x.m?.health?.claudeVersion).map((x) => x.m.health.claudeVersion).sort(vcmp).pop();
   for (const x of ms) {
     if (!x.online) continue; // the offline banner covers it
     const h = x.m?.health, qd = x.m?.quarterdeck, bad = [];
     if (x.id && (!qd || qd.protocol < mine)) { bad.push("old"); warns.push(t("{m} runs an older Quarterdeck", { m: `<b>${esc(x.label)}</b>` }) + (qd ? t(" (protocol {p}, this page expects {e})", { p: qd.protocol, e: mine }) : "") + t(": deploy the update to it.")); }
+    if (h?.claudeVersion && newest && vcmp(h.claudeVersion, newest) < 0) warns.push(t("{m}: Claude Code {v} is older than {n} on your other machines.", { m: `<b>${esc(x.label)}</b>`, v: esc(h.claudeVersion), n: esc(newest) }));
     if (h?.disk?.low) { bad.push("disk"); warns.push(t("{m}: disk almost full — {p}% free ({g} GB).", { m: `<b>${esc(x.label)}</b>`, p: h.disk.freePct, g: h.disk.freeGB })); }
     for (const a of x.accounts) {
       const left = a.loginExpiresAt ? (Date.parse(a.loginExpiresAt) - Date.now()) / 86400000 : Infinity;
@@ -478,7 +464,9 @@ function machinesBlock() {
       t("load {l}/{c}", { l: h.load1, c: h.cpus }),
       h.mem && h.mem.usedPct >= 0 ? t("mem {p}%", { p: h.mem.usedPct }) : "",
       ...h.gpu.map((g) => `GPU ${g.utilPct}% · ${g.memUsedGB}/${g.memTotalGB} GB`),
-      h.claudeVersion ? `Claude ${esc(h.claudeVersion)}` : "",
+      h.claudeVersion ? (newest && vcmp(h.claudeVersion, newest) < 0
+        ? `<span class="warnt">Claude ${esc(h.claudeVersion)}</span> <button class="mini" data-cu="${esc(x.id)}" data-label="${esc(x.label)}" title="${t("Runs the official 'claude update' on that machine")}">${t("Update to {v}", { v: esc(newest) })}</button>`
+        : `Claude ${esc(h.claudeVersion)}`) : "",
       login ? `<span class="${bad.includes("login") ? "warnt" : ""}">${t("login until {d}", { d: esc(login) })}</span>` : "",
     ].filter(Boolean);
     rows.push(`<div class="mrow" title="Quarterdeck ${esc(qd?.version || "?")} · build ${esc(qd?.build || "?")} · protocol ${qd?.protocol ?? "?"}"><b>${esc(x.label)}</b>${parts.map((p) => `<span>${p}</span>`).join("")}</div>`);
@@ -487,6 +475,17 @@ function machinesBlock() {
   return warnHtml + (multiHost() ? `<div class="machines">${rows.join("")}</div>` : "");
 }
 
+let claudeUpdating = "";
+async function updateClaude(node, label, btn) {
+  if (claudeUpdating) return;
+  if (!confirm(t("Update Claude Code on {m} now?\nIt runs the official 'claude update' there. Sessions that are running keep the old version until they are restarted.", { m: label }))) return;
+  claudeUpdating = node || "self"; btn.disabled = true; btn.textContent = t("updating…");
+  try {
+    const r = await api(nb(node) + "/api/claude-update", {});
+    toast(r.ok ? t("{m}: Claude Code is now {v}", { m: label, v: r.version || "?" }) : `${label}: ${String(r.out || "").slice(-300)}`, r.ok ? 6000 : 15000);
+  } catch (e) { toast(`${label}: ${e.message}`, 12000); }
+  claudeUpdating = ""; await poll();
+}
 function renderDash() {
   dashMode(false); renderPluginTops(); renderOverview();
   const blocked = data.jobs.filter(isBlocked);
@@ -508,6 +507,7 @@ function renderDash() {
   $("#dash").scrollTop = y;
   el.querySelectorAll("[data-more]").forEach((b) => (b.onclick = () => { showAll[b.dataset.more] = true; renderDash(); }));
   $("#shellBtn").onclick = () => (location.hash = "#/shell");
+  $("#dash").querySelectorAll("[data-cu]").forEach((b) => (b.onclick = () => updateClaude(b.dataset.cu, b.dataset.label, b)));
   el.querySelectorAll("[data-lang]").forEach((a) => (a.onclick = (e) => { e.preventDefault(); store.set("lang", a.dataset.lang); location.reload(); }));
   $("#dash").querySelectorAll("#dashTop [data-rm], #dashBody [data-rm]").forEach((b) => (b.onclick = (e) => { e.preventDefault(); e.stopPropagation(); removeJob(b.dataset.rm, b.dataset.node || ""); }));
   rememberGroups($("#dash"), "details.grp");

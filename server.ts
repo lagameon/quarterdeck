@@ -762,6 +762,21 @@ async function statsApi(daysN: number) {
   return { ready: true, updatedAt: c.updatedAt, days, top, quota: await quotaStatus() };
 }
 
+// Runs Claude Code's own updater on this machine (`claude update`: native installs update themselves, package-manager
+// installs go through the package manager). One at a time; the health line shows the new version right away.
+let claudeUpdateBusy = false;
+async function actClaudeUpdate() {
+  if (claudeUpdateBusy) return json({ ok: false, out: "an update is already running" }, 409);
+  claudeUpdateBusy = true;
+  try {
+    const r = await run([CLAUDE_BIN, "update"], { timeoutMs: 10 * 60_000 });
+    const v = await run([CLAUDE_BIN, "--version"], { timeoutMs: 15000 });
+    const version = v.code === 0 ? v.out.trim().split(/\s+/)[0] : null;
+    health.recheck(); agentsCache.invalidate();
+    console.log(`[claude-update] exit ${r.code}, now ${version}`);
+    return json({ ok: r.code === 0, version, out: (r.out + r.err).trim().slice(-2000) }, r.code === 0 ? 200 : 500);
+  } finally { claudeUpdateBusy = false; }
+}
 async function actStop(body: any) {
   const id = String(body.id || ""); if (!/^[0-9a-f]{6,12}$/.test(id)) return json({ error: "bad id" }, 400);
   const r = await run([CLAUDE_BIN, "stop", id], { timeoutMs: 30000, env: profileEnv(profileOfJob(id)) }); agentsCache.invalidate(); jobsSnap.at = 0;
@@ -1180,6 +1195,7 @@ async function handle(req: Request, server: any): Promise<Response | undefined> 
       if (path === "/api/send") return actSend(body);
       if (path === "/api/keys") return actKeys(body);
       if (path === "/api/stop") return actStop(body);
+      if (path === "/api/claude-update") return actClaudeUpdate();
       if (path === "/api/rm") return actRm(body);
     }
     const pm = path.match(/^\/api\/p\/([\w-]{1,32})(\/.*)?$/); // a plug-in's own API: /api/p/<name>/<sub-path>

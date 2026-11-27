@@ -77,5 +77,5 @@ export function startHealth(run: Run, claudeBin: string, home: string, everyMs =
     } catch (e: any) { console.warn(`[health] ${e?.message || e}`); } finally { busy = false; }
   };
   collect(); setInterval(collect, everyMs);
-  return () => latest;
+  return Object.assign(() => latest, { recheck: () => { versionAt = 0; collect(); } }); // recheck: read the Claude Code version again now
 }
