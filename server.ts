@@ -433,6 +433,12 @@ function parseLine(line: string, allowSidechain = false): Ev[] {
   if (d.isSidechain && !allowSidechain) return [];
   const ts = d.timestamp || "", uuid = d.uuid || "";
   const evs: Ev[] = [];
+  // A task notification that arrives while the session is busy is not written as a user message but as a
+  // queued command (an attachment line). Without this, a background shell that ended mid-turn stayed "running".
+  if (d.type === "attachment" && d.attachment?.type === "queued_command" && typeof d.attachment.prompt === "string" && d.attachment.prompt.startsWith("<task-notification>")) {
+    const tn = d.attachment.prompt.match(/<task-id>([^<]+)<\/task-id>[\s\S]*?<status>([^<]+)<\/status>/);
+    return tn ? [{ k: "bgdone", id: `${uuid}:bg`, ts, taskId: tn[1].trim(), status: tn[2].trim() }] : [];
+  }
   if (d.type === "user") {
     const c = d.message?.content;
     if (typeof c === "string") {
